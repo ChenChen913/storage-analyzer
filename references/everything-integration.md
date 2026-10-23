@@ -48,10 +48,12 @@ WizTree64.exe "C:\" /export="C:\tmp\wiz.csv" /exportfolders=0 /exportfiles=1 /ad
 ```
 
 - `/exportfolders=0 /exportfiles=1`：只导文件行。目录行 Name 以 `\` 结尾且 Size 是子树总量，混入会导致重复计数。
-- `/admin=0`：不请求提权、不弹 UAC；以管理员身份运行 scan.py 时可改 `/admin=1` 走 MFT 直读。
+- `/admin=0`：不请求提权、不弹 UAC，但读不到 WindowsApps 等受保护目录。同机 C 盘实测普通权限少 5 万文件、18.7 GB。
+- `/admin=1`：需要当前进程已提权，走 MFT 直读，速度快且覆盖完整。scan.py 用 `--wiztree-admin` 开启，必须先在提权终端里运行。
 - 导出格式（带表头）：`File Name, Size, Allocated, Modified, Attributes, Files, Folders`。
   统一用 `Size`（逻辑大小）；`Allocated` 对硬链接文件带前导 0 标记，口径与 Everything 不一致。
 - 导出完进程自动退出，不需要常驻服务。
+- 同机性能与覆盖对比见 [data-source-comparison.md](data-source-comparison.md)。
 
 ## 4. 与 skill 的集成（scan.py 已内置）
 
@@ -66,6 +68,7 @@ WizTree64.exe "C:\" /export="C:\tmp\wiz.csv" /exportfolders=0 /exportfiles=1 /ad
   ```cmd
   python scripts\scan.py --drives C,D --out scan.json              # auto
   python scripts\scan.py --drives C --source wiztree --out scan.json
+  python scripts\scan.py --drives C --source wiztree --wiztree-admin --out scan.json  # 需已提权
   python scripts\scan.py --drives C --no-everything --out scan.json # 等价 --source walk
   python scripts\scan.py --drives C --top 50 --min-dir 20           # 调整阈值
   python scripts\scan.py --drives C --reuse-csv                     # 复用 %TEMP%\scan_C.csv

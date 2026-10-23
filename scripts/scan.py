@@ -286,15 +286,17 @@ def normalize_wiztree_csv(src, dst):
     return ok and os.path.exists(dst) and os.path.getsize(dst) > 0
 
 
-def wiztree_export_csv(exe, drive, out_csv, timeout=1200):
+def wiztree_export_csv(exe, drive, out_csv, timeout=1200, admin=False):
     """WizTree 命令行导出（仅文件行，避免目录行重复计数）。
 
-    /admin=0 不再弹 UAC；以管理员身份运行本脚本时可改 /admin=1，走 MFT 直读。
+    admin=False 时用 /admin=0，不弹 UAC，但读不到 WindowsApps 等受保护目录；
+    admin=True 需要当前进程已提权，走 MFT 直读，速度快且覆盖完整。
     导出的是 WizTree 原生格式，随后转成本项目统一 CSV。
     """
     raw = out_csv + ".wiz"
     args = [exe, drive, "/export=" + raw,
-            "/exportfolders=0", "/exportfiles=1", "/admin=0"]
+            "/exportfolders=0", "/exportfiles=1",
+            "/admin=" + ("1" if admin else "0")]
     try:
         os.remove(raw)  # 清掉上次崩溃遗留的导出文件，避免把旧数据当新结果
     except OSError:
@@ -627,7 +629,8 @@ def scan_windows(opts):
                             print("未找到 WizTree（wiztree64.exe）：请安装 WizTree，"
                                   "或设置环境变量 %s 指向 exe" % WIZTREE_ENV, file=sys.stderr)
                         continue
-                    if wiztree_export_csv(wz, drive, csv_path):
+                    if wiztree_export_csv(wz, drive, csv_path,
+                                          admin=bool(opts.get("wiztree_admin"))):
                         picked = "wiztree"
                         break
                     print("WizTree 导出失败，%s 盘" % drive, file=sys.stderr)
@@ -658,6 +661,18 @@ def scan_windows(opts):
     coverage["method"] = "+".join(
         s for s in ("everything", "wiztree", "walk") if s in used) \
         or ("reused" if reused_drives else "none")
+    if "walk" in used and source == "auto":
+        if not es and not wz:
+            print("提示：未检测到 Everything / WizTree，已回退全盘遍历。"
+                  "推荐先安装 Everything（免费、无需提权即可全盘覆盖、重复扫描秒级）。",
+                  file=sys.stderr)
+        elif es and not wz:
+            print("提示：Everything 已安装但本次导出失败（常见原因：主程序未运行）。"
+                  "启动 Everything 后重扫可提速 10 倍以上；也可安装 WizTree 作为备选。",
+                  file=sys.stderr)
+    if "wiztree" in used and not opts.get("wiztree_admin"):
+        print("提示：WizTree 以普通权限导出，WindowsApps 等受保护目录可能漏计；"
+              "需要完整覆盖请在提权终端加 --wiztree-admin 重扫。", file=sys.stderr)
 
     # 回收站（各盘）：合并大小
     recycle_items = []
@@ -744,6 +759,8 @@ def main():
                     help="data source; auto = Everything -> WizTree -> walk")
     ap.add_argument("--no-everything", action="store_true",
                     help="等同于 --source walk（保留兼容）")
+    ap.add_argument("--wiztree-admin", action="store_true", dest="wiztree_admin",
+                    help="WizTree 以管理员模式导出（需已提权），走 MFT 且覆盖受保护目录")
     ap.add_argument("--reuse-csv", action="store_true", dest="reuse_csv",
                     help="reuse existing scan_<drive>.csv in temp dir instead of re-exporting")
     ap.add_argument("--min-dir", type=int, default=10, dest="min_dir_mb")
@@ -758,7 +775,8 @@ def main():
             "min_dir_mb": args.min_dir_mb,
             "big_mb": args.big_mb, "cache_mb": args.cache_mb,
             "updater_mb": args.updater_mb, "ver_mb": args.ver_mb,
-            "top": args.top, "tmpdir": None, "reuse_csv": args.reuse_csv}
+            "top": args.top, "tmpdir": None, "reuse_csv": args.reuse_csv,
+            "wiztree_admin": args.wiztree_admin}
     if args.drives.strip():
         opts["drives"] = [d.strip() + ":\\" for d in args.drives.split(",") if d.strip()]
     system, groups, coverage = scan_windows(opts)

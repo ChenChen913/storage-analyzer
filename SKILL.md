@@ -50,10 +50,17 @@ macOS 自带 python3，无需此步。
 **速度是体验的核心。** Windows 上 scan.py v2 采用**数据源插件化**，按 `--source` 顺序尝试：
 
 1. **Everything 优先（推荐）**：自动探测 `es.exe`（`D:\Everything\es.exe`、`C:\Everything\es.exe`、Program Files、PATH），探测到即导出全盘文件清单（实测 350 万文件 5-6 秒/盘），单次遍历同时产出：目录聚合(2/3 层)、大文件 TopN、安装包、缓存目录、更新器目录、多版本目录。**实测整盘分析 ~18 秒**。
-2. **WizTree 次选（没装 Everything 时的最佳替代）**：自动探测 `wiztree64.exe`（Program Files、PATH、`%LOCALAPPDATA%`），命令行读 MFT 导出文件清单，速度接近 Everything，且不需要常驻服务。便携版用环境变量 `STORAGE_ANALYZER_WIZTREE=<exe 绝对路径>` 指定。默认 `/admin=0` 不弹 UAC；以管理员身份跑 scan.py 时可改 `/admin=1` 走 MFT 直读。
+2. **WizTree 次选（没装 Everything 时的替代）**：自动探测 `wiztree64.exe`（Program Files、PATH、`%LOCALAPPDATA%`），命令行读盘导出文件清单，不需要常驻服务。便携版用环境变量 `STORAGE_ANALYZER_WIZTREE=<exe 绝对路径>` 指定。默认 `/admin=0` 不弹 UAC；**普通权限会漏掉 WindowsApps、Defender 定义等受保护目录（同机实测 C 盘少 18.7 GB、5 万文件）**，需要完整覆盖时在已提权终端加 `--wiztree-admin`（`/admin=1`）。
 3. **回退 os.scandir 全盘遍历**：两个工具都没有、或 Everything 已装但未启动（es.exe 报 IPC window not found）时自动回退，保证"全盘覆盖"而非固定目标列表（慢，30-90 分钟/盘）。
 
 三者导出的 CSV 都会归一成同一份 `"路径",大小` 格式，后续聚合完全一致。默认 `--source auto` 按 Everything → WizTree → walk 顺序自动降级；也可 `--source everything|wiztree|walk` 强制指定（便于排查和基准测试，指定源失败则跳过该盘）。
+
+**数据源怎么选（实测数据见 [references/data-source-comparison.md](references/data-source-comparison.md)）：**
+
+- **已装 Everything 或 WizTree：直接用已装的那个。** `--source auto` 会自动优先 Everything、其次 WizTree，不需要用户做决定。
+- **只装了 WizTree：** 可以直接用，但普通权限会漏掉 WindowsApps 等受保护目录；报告里要注明这一点，需要精确统计时在提权终端加 `--wiztree-admin` 重扫。
+- **两个都没装：推荐先装 Everything。** 免费、普通权限就能全盘覆盖、重复扫描秒级（同机 C 盘 15.5s，WizTree 81s），代价是索引常驻约 400MB 内存。WizTree 适合不想常驻后台、只用图形界面的场景。
+- **两个都没有又暂时不装：** 自动回退 walk，百万文件级要几十分钟，只适合应急。
 
 **Windows（索引工具可用时）：**
 ```bash
@@ -63,6 +70,8 @@ python scripts/scan.py --out "%TEMP%\storage_scan.json"
 python scripts/scan.py --drives C,D --top 50 --min-dir 20 --out "%TEMP%\storage_scan.json"
 # 强制指定数据源（auto=Everything→WizTree→walk）
 python scripts/scan.py --drives C --source wiztree --out "%TEMP%\storage_scan.json"
+# WizTree 完整覆盖：在已提权的终端里加 --wiztree-admin（走 MFT + 受保护目录）
+python scripts/scan.py --drives C --source wiztree --wiztree-admin --out "%TEMP%\storage_scan.json"
 # 强制 walk 回退（排查用，等价 --source walk）
 python scripts/scan.py --drives C --no-everything --out "%TEMP%\storage_scan.json"
 ```
@@ -263,7 +272,7 @@ python3 scripts/build_report.py /tmp/storage_analysis.json ~/Desktop/storage-rep
 
 ## 平台状态
 
-- **Windows**：已验证通过（Windows 10/11 + Python 3.11 + git-bash）。`scan.py` v2 已实测：Everything 后端 18 秒完成 D 盘 197 万文件全盘分析（目录聚合/大文件/安装包/缓存/更新器/多版本六维输出），`coverage` 覆盖声明生效；WizTree 作为第二数据源已接入（CSV 归一化 + auto 降级链实测），walk 回退与 macOS 分支保持兼容。`server.py` 报告渲染正常；回收站操作（`SHFileOperationW`）待后续实测验证。踩坑实录见 [references/lessons-learned-windows.md](references/lessons-learned-windows.md)，Everything / WizTree 集成方法见 [references/everything-integration.md](references/everything-integration.md)。历史完整案例见 [references/win11-case-study-20260603.md](references/win11-case-study-20260603.md)、[references/win11-cleanup-case-20260618.md](references/win11-cleanup-case-20260618.md)、[references/win11-optimization-case-20260715.md](references/win11-optimization-case-20260715.md)。
+- **Windows**：已验证通过（Windows 10/11 + Python 3.11 + git-bash）。`scan.py` v2 已实测：Everything 后端 18 秒完成 D 盘 197 万文件全盘分析（目录聚合/大文件/安装包/缓存/更新器/多版本六维输出），`coverage` 覆盖声明生效；WizTree 4.33 已在本机安装并完成同机对比（导出、覆盖、端到端耗时，见 [references/data-source-comparison.md](references/data-source-comparison.md)），walk 回退与 macOS 分支保持兼容。`server.py` 报告渲染正常；回收站操作（`SHFileOperationW`）待后续实测验证。踩坑实录见 [references/lessons-learned-windows.md](references/lessons-learned-windows.md)，Everything / WizTree 集成方法见 [references/everything-integration.md](references/everything-integration.md)。历史完整案例见 [references/win11-case-study-20260603.md](references/win11-case-study-20260603.md)、[references/win11-cleanup-case-20260618.md](references/win11-cleanup-case-20260618.md)、[references/win11-optimization-case-20260715.md](references/win11-optimization-case-20260715.md)。
 - **macOS**：完整实现并实测（扫描 / 报告 / 一键删除全验证过）。
 
 ## 常见陷阱 / Common Pitfalls
@@ -546,7 +555,8 @@ wiztree64.exe "C:\" /export="C:\tmp\wiz.csv" /exportfolders=0 /exportfiles=1 /ad
 
 - **必须只导文件行（`/exportfolders=0 /exportfiles=1`）**：WizTree 的目录行 Name 以 `\` 结尾且 Size 是子树总量，混进来会把同一批字节重复计数。scan.py 的 `normalize_wiztree_csv` 会再过滤一遍，但仍建议命令行就限定只导文件。
 - **CSV 表头是 `File Name, Size, Allocated, Modified, Attributes, Files, Folders`**，`csv.reader` 解析（路径里可能有逗号，别用 split）。用 `Size`（逻辑大小）而不是 `Allocated`：硬链接文件的 Allocated 带前导 0 标记，口径不一致。
-- **默认 `/admin=0` 不弹 UAC**，走普通权限扫描，速度仍远快于 walk；以管理员身份运行 scan.py 时可改 `/admin=1` 走 MFT 直读。
+- **默认 `/admin=0` 不弹 UAC，但有覆盖缺口。** 同机 C 盘实测：普通权限比 Everything 少 5 万文件、18.7 GB，漏掉 WindowsApps（9.6 GB）、Defender 定义（3.4 GB）等受保护目录。需要完整覆盖时，在**已提权的终端**里跑 `scan.py --source wiztree --wiztree-admin`，对应 `/admin=1`，走 MFT 直读。
+- **速度**：同机 C 盘 Everything 导出 5.9 s，WizTree 普通权限冷缓存 141 s、热缓存 36 s；端到端 scan.py 分别 15.5 s 和 81 s。详细对比见 [references/data-source-comparison.md](references/data-source-comparison.md)。
 - WizTree 导出完进程会自动退出，不需要常驻；同时开 GUI 也不影响 CLI（各自独立进程）。
 - 注意 WizTree 免费版仅供个人使用，商用需授权。
 
