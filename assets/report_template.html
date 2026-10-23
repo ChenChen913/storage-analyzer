@@ -186,9 +186,25 @@
 <script>
 const DATA = __REPORT_DATA__;
 const DELETE = __DELETE_CONFIG__; // null=静态只读报告；{token,endpoint}=server.py 提供一键删除
-const IS_WIN = (DATA.system && /win/i.test(DATA.system.os||''));
-const FM = IS_WIN ? '资源管理器' : '访达';
-const TRASH_WORD = IS_WIN ? '回收站' : '废纸篓';
+
+// 系统识别：优先读扫描结果里的 system.os，缺失时按盘符/路径兜底，
+// 避免徽标对 Linux 显示苹果图标、或 os 为空时只剩一个空壳。
+function detectOsKind(s){
+  const t = String((s && s.os) || '').toLowerCase();
+  if(/windows|win ?(7|8|10|11|server)|\bwin\b/.test(t)) return 'win';
+  if(/mac ?os|darwin|os ?x/.test(t)) return 'mac';
+  if(/linux|ubuntu|debian|fedora|centos|arch|opensuse|gnu/.test(t)) return 'linux';
+  const dn = String((s && s.disk_name) || '');
+  if(/^[a-z]:/i.test(dn)) return 'win';
+  // "/" 在 macOS 和 Linux 上相同，无法区分，宁可显示未知也不要张冠李戴
+  return 'unknown';
+}
+const OS_KIND = detectOsKind(DATA.system);
+const IS_WIN = OS_KIND === 'win';
+const FM = OS_KIND==='win' ? '资源管理器' : OS_KIND==='mac' ? '访达' : '文件管理器';
+const TRASH_WORD = OS_KIND==='win' ? '回收站' : OS_KIND==='mac' ? '废纸篓' : '回收站';
+const OS_ICON = {win:'🪟', mac:'🍎', linux:'🐧', unknown:'💻'}[OS_KIND];
+const OS_FALLBACK = {win:'Windows', mac:'macOS', linux:'Linux', unknown:'未知系统'}[OS_KIND];
 
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const cleanSize = s => String(s==null?'':s).replace(/[（(]\s*估算[^）)]*[）)]/g, '').trim();
@@ -214,12 +230,16 @@ function cmdBlock(c){
 }
 
 function renderSystem(s, sm){
+  s = s || {};
   document.getElementById('meta').textContent =
     `生成于 ${DATA.generated_at}　·　扫描耗时 ${DATA.scan_seconds||'?'}s`;
 
-  // OS 徽标
-  const osIcon = IS_WIN ? '🪟' : '🍎';
-  document.getElementById('osBadge').innerHTML = `${osIcon} ${esc(s.os||'')}`;
+  // OS 徽标：os 文本来自实际扫描结果；缺失时退回系统类型名称，不再显示空白
+  const osText = s.os || OS_FALLBACK;
+  const title = [s.build && `build ${s.build}`, s.arch].filter(Boolean).join(' · ');
+  document.getElementById('osBadge').innerHTML =
+    `<span class="os-icon">${OS_ICON}</span> ${esc(osText)}`;
+  document.getElementById('osBadge').title = title;
 
   const total = parseGB(s.disk_total) || 1;
   const used = parseGB(s.disk_used);

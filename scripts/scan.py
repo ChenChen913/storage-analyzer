@@ -474,6 +474,7 @@ def scan_windows(opts):
     groups = {}
     coverage = {"method": "everything" if es else "walk", "es_path": es,
                 "drives": drives, "files_scanned": 0}
+    used_walk = False
     for drive in drives:
         csv_path = os.path.join(tmpdir, "scan_%s.csv" % drive[0])
         reused = False
@@ -483,10 +484,15 @@ def scan_windows(opts):
         elif es:
             ok = es_export_csv(es, drive, csv_path)
             if not ok:
-                print(json.dumps({"error": "es_export_failed", "drive": drive}),
-                      file=sys.stderr)
-                continue
+                # ES 存在但 Everything 没运行时，es.exe 会报 Error 8（IPC window not found）。
+                # 这种情况必须回退全盘遍历，否则该盘直接空结果。
+                print("Everything 导出失败（常见原因：Everything 未启动），%s 盘回退全盘遍历，耗时较长"
+                      % drive, file=sys.stderr)
+                used_walk = True
+                if not walk_export_csv(drive, csv_path):
+                    continue
         else:
+            used_walk = True
             if not walk_export_csv(drive, csv_path):
                 continue
         res = combined_pass(csv_path, drive, min_dir_mb=min_dir_mb, big_mb=big_mb,
@@ -503,6 +509,9 @@ def scan_windows(opts):
         g["cache_dirs"] = res["cache_dirs"]
         g["updater_dirs"] = res["updater_dirs"]
         g["version_dirs"] = res["version_dirs"]
+
+    if used_walk:
+        coverage["method"] = "everything+walk" if es else "walk"
 
     # 回收站（各盘）：合并大小
     recycle_items = []

@@ -50,7 +50,7 @@ macOS 自带 python3，无需此步。
 **速度是体验的核心。** Windows 上 scan.py v2 采用**数据源插件化**：
 
 1. **Everything 优先（推荐）**：自动探测 `es.exe`（`D:\Everything\es.exe`、`C:\Everything\es.exe`、Program Files、PATH），探测到即导出全盘文件清单（实测 350 万文件 5-6 秒/盘），单次遍历同时产出：目录聚合(2/3 层)、大文件 TopN、安装包、缓存目录、更新器目录、多版本目录。**实测整盘分析 ~18 秒**。
-2. **回退 os.scandir 全盘遍历**：无 Everything 时自动回退，保证"全盘覆盖"而非固定目标列表（慢，30-90 分钟/盘，大磁盘强烈建议装 Everything）。
+2. **回退 os.scandir 全盘遍历**：无 Everything、或 Everything 已装但未启动（es.exe 报 IPC window not found）时自动回退，保证"全盘覆盖"而非固定目标列表（慢，30-90 分钟/盘，大磁盘强烈建议装 Everything）。
 
 **Windows（Everything 可用时）：**
 ```bash
@@ -117,6 +117,8 @@ macOS 单盘（/），`du` 速度快，但多卷（外置盘等）同理并行�
 ### Step 1.5 增量审计（v3 新增，每轮必跑）
 
 扫描完成后、人工分析开始前，依次跑四个增量工具。它们解决的是六轮实战暴露的结构性问题：跨轮失忆、成套清理失败、卸载残留无人认领、没审过的应用被 TopN 挤掉。
+
+> **仅 Windows 适用。** 这四个工具依赖 Everything 导出的 CSV 与 Windows 注册表/目录布局，macOS 没有 CSV 通路。macOS 上跳过 Step 1.5，直接进入 Step 2（scan.py + drilldown.py + build_report.py 已适配 macOS）。Linux 目前不支持。
 
 ```bash
 # 1) 规则引擎：成组命中清理候选（plugins zip 组 / 多版本 bin / 崩溃转储 / 巨型日志）
