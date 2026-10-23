@@ -15,7 +15,8 @@ Output shape (same on both OSes):
              disk_total, disk_used, disk_free, purgeable,
              disks: [{name, total, used, free}]},   # all volumes/drives
   "groups": { "<group>": [{name, path, size_kb, size_h}], ... },
-  "coverage": {method, drives, files_scanned, es_path, wiztree_path, ...}
+  "coverage": {method, drives, files_scanned, es_path, wiztree_path, ...},
+  "temp_artifacts": {dir, files: [{path, size_kb, size_h}], total_kb, total_h, rule}
 }
 """
 import json
@@ -584,6 +585,32 @@ def running_apps(limit=50):
         return []
 
 
+def collect_temp_artifacts(tmpdir, drives):
+    """本轮扫描留在临时目录的中间文件（只报告，不删除）。
+
+    这些 CSV 是 Step 1.5 增量审计与 --reuse-csv 复扫的输入，不能在扫描后
+    立即清掉；由 agent 在本轮分析结束、用户确认后按 SKILL.md Step 5 处理。
+    """
+    files = []
+    for drive in drives:
+        csv_path = os.path.join(tmpdir, "scan_%s.csv" % drive[0])
+        for path in (csv_path, csv_path + ".wiz"):
+            if not os.path.exists(path):
+                continue
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            files.append({"path": path,
+                          "size_kb": size // 1024,
+                          "size_h": human(size // 1024)})
+    total_kb = sum(f["size_kb"] for f in files)
+    return {"dir": tmpdir, "files": files,
+            "total_kb": total_kb, "total_h": human(total_kb),
+            "rule": "Step 1.5 与复扫依赖这些 CSV；本轮分析结束、"
+                    "用户确认不再复扫后再删除"}
+
+
 def scan_windows(opts):
     source = opts.get("source", "auto")
     es = find_es() if source in ("auto", "everything") else None
@@ -713,7 +740,15 @@ def scan_windows(opts):
     dev.sort(key=lambda r: r["size_kb"], reverse=True)
     groups["dev_caches"] = dev
     groups["running_apps"] = running_apps()
-    return system_info_windows(), groups, coverage
+    artifacts = collect_temp_artifacts(tmpdir, drives)
+    if artifacts["files"]:
+        print("临时清单：%s（合计 %s）。Step 1.5 与复扫依赖这些 CSV，"
+              "本轮分析结束、用户确认不再复扫后再删除。"
+              % (", ".join("%s %s" % (os.path.basename(f["path"]), f["size_h"])
+                           for f in artifacts["files"]),
+                 artifacts["total_h"]),
+              file=sys.stderr)
+    return system_info_windows(), groups, coverage, artifacts
 
 
 def main():
@@ -737,6 +772,10 @@ def main():
             "coverage": {"method": "du", "drives": ["/"],
                          "files_scanned": None,
                          "note": "macOS 用 du 统计目标目录，非全盘文件清单"},
+            "temp_artifacts": {"dir": _tf.gettempdir(), "files": [],
+                               "total_kb": 0, "total_h": "0 KB",
+                               "rule": "macOS 不生成 CSV；调用方保存的 scan JSON "
+                                       "在本轮结束后按 SKILL.md Step 5 询问是否删除"},
             "scan_seconds": round(time.time() - started, 1),
         }
         print(json.dumps(data, ensure_ascii=False, indent=2))
@@ -779,7 +818,7 @@ def main():
             "wiztree_admin": args.wiztree_admin}
     if args.drives.strip():
         opts["drives"] = [d.strip() + ":\\" for d in args.drives.split(",") if d.strip()]
-    system, groups, coverage = scan_windows(opts)
+    system, groups, coverage, artifacts = scan_windows(opts)
     hierarchy = {
         "drive_*": {"parent": None, "children": []},
         "recycle_bin": {"parent": None, "children": [], "note": "回收站，清空后释放空间"},
@@ -791,6 +830,7 @@ def main():
         "system": system,
         "groups": groups,
         "coverage": coverage,
+        "temp_artifacts": artifacts,
         "_hierarchy": hierarchy,
         "scan_seconds": round(time.time() - started, 1),
     }

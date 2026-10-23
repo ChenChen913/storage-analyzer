@@ -64,6 +64,7 @@ WizTree64.exe "C:\" /export="C:\tmp\wiz.csv" /exportfolders=0 /exportfiles=1 /ad
   3. `walk_export_csv()`：os.scandir 全盘遍历，慢但保证覆盖。
 - 三者都落到同一份 `"路径",大小` CSV，`combined_pass()` 单次遍历完成：目录聚合(2/3 层)、大文件 TopN、安装包、缓存目录、更新器目录、多版本目录。
 - 输出 `coverage.method` 记录实际数据源（`everything` / `wiztree` / `walk`，混用形如 `everything+walk`），并带 `es_path` / `wiztree_path` / `drives` / `files_scanned`。
+- 输出 `temp_artifacts` 列出本轮在 `%TEMP%` 留下的 `scan_<drive>.csv` 及体量。这些 CSV 是 Step 1.5 与 `--reuse-csv` 的输入，本轮分析结束、用户确认后再删，规则见 SKILL.md Step 5。
 - 用法：
   ```cmd
   python scripts\scan.py --drives C,D --out scan.json              # auto

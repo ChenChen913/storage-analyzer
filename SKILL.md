@@ -20,7 +20,8 @@ description: >
 
 ## 铁律
 
-- **全程只读。** 只能跑扫描/统计/列目录/读元信息。绝对禁止 del、rd、rmdir、清空回收站、改权限等任何写操作。
+- **全程只读（唯一例外见下一条）。** 只能跑扫描/统计/列目录/读元信息。绝对禁止 del、rd、rmdir、清空回收站、改权限等任何写操作。
+- **扫描中间产物必须收尾清理。** `scan.py` 会在 `%TEMP%` 生成 `scan_<盘符>.csv`（单盘 100-250MB，多盘可达 1GB+），并可能留下 `.wiz` 残留。这些文件是 Step 1.5 增量审计和 `--reuse-csv` 复扫的必需输入，**扫描后到报告交付前不得删除**；本轮分析彻底结束、用户确认不再复扫后，必须主动询问是否删除（流程见 Step 5）。这是唯一允许本 skill 删除的东西，且只删自己命名的 `scan_*.csv` / `scan_*.csv.wiz`，`%TEMP%` 下其他文件一律不碰。
 - **删除命令只展示，不执行。** 报告里给出的清理命令是供用户自己在终端确认后运行的。即使用户在对话里说"帮我删"，也要先停下确认（命中全局红线：删除文件必须先问），不要直接代跑。
 - **估算标注清楚。** 涉及"可释放空间"一律说明是估算值。
 - **路径、命令保留原文不翻译。**
@@ -116,7 +117,7 @@ macOS 单盘（/），`du` 速度快，但多卷（外置盘等）同理并行�
 - **Windows**：全盘清单（Everything → WizTree → os.scandir 全盘遍历），单遍聚合 drive_root(depth2/3)、big_files、installers、cache_dirs、updater_dirs、version_dirs、recycle_bin、dev_caches、running_apps；`system.disks` 含所有盘符（C:、D:……）；输出含 `coverage`（method/es_path/wiztree_path/drives/files_scanned）。
 - **macOS**：扫 home、library、caches、containers、group_containers、app_support、applications、downloads、dev_caches，用 `du` 算大小；输出含 `coverage.method=du`。
 
-输出 JSON：`system`（系统/磁盘信息，含 `disk_name` 主盘名 + `disks` 全部盘）+ `groups`（各组子目录大小，已降序、过滤阈值以上）+ `coverage`（扫描方法/数据源路径/覆盖盘/文件数）+ `_hierarchy`（groups 间的父子包含关系，标注哪些组是其他组的子集，防止分析时重复统计）。读不到的目录标 `denied`，需在报告里列出并提示遗漏体量。
+输出 JSON：`system`（系统/磁盘信息，含 `disk_name` 主盘名 + `disks` 全部盘）+ `groups`（各组子目录大小，已降序、过滤阈值以上）+ `coverage`（扫描方法/数据源路径/覆盖盘/文件数）+ `temp_artifacts`（本轮生成的临时清单及体量，供 Step 5 收尾）+ `_hierarchy`（groups 间的父子包含关系，标注哪些组是其他组的子集，防止分析时重复统计）。读不到的目录标 `denied`，需在报告里列出并提示遗漏体量。
 
 - **Windows 扫描耗时**：Everything 后端 ~18 秒/盘；WizTree 同为 MFT 级（秒级），无索引工具时 walk 回退数分钟到数十分钟（百万文件级）。先告知用户预计时间。
 
@@ -262,6 +263,25 @@ python3 scripts/build_report.py /tmp/storage_analysis.json ~/Desktop/storage-rep
 ### Step 4 对话里给摘要
 
 报告生成后，在对话里用一段话给结论先行的摘要：总可释放估算、最该先清的 2-3 项、风险最高的一项。细节让用户看网页。
+
+### Step 5 收尾：处理扫描中间产物（每轮必做）
+
+Windows 上每轮扫描都会在 `%TEMP%` 留下 `scan_<盘符>.csv`（单盘 100-250MB，多盘可到 1GB 以上），WizTree 异常退出时还可能留下 `scan_<盘符>.csv.wiz`。这些是 Step 1.5 四个增量脚本和 `--reuse-csv` 复扫的输入，**扫描后立即删除会导致整套审计重跑、复扫重新导出，必须等到本轮分析结束**。
+
+**删除时机：**
+1. 报告已交付、用户确认不再重出报告，且没有「清理后再复扫对比」的计划 → 默认删除点，此时主动询问。
+2. 用户说清理后还要复扫、或要做前后对比 → 保留到复扫结束，届时再提醒一次。
+3. 用户事先授权过「不用问，直接删」→ 到默认删除点直接删；否则每次都必须先问。
+
+**主动提醒（用一句话说清体量和后续影响，不要堆命令）：**
+> 本轮扫描在 `%TEMP%` 留下了 scan_C.csv、scan_D.csv，合计约 420 MB，现在已经不需要了。要我删掉吗？如果你打算清理后再扫一遍做对比，可以先留着，等复扫完我再提醒你删。
+
+**执行规则：**
+- 删除前先读扫描 JSON 里的 `temp_artifacts`（含每个文件的实际大小与合计），按真实体量汇报，不要凭印象估。
+- 只删精确匹配 `%TEMP%\scan_<盘符>.csv` 和 `scan_<盘符>.csv.wiz` 的文件；`%TEMP%` 下其他任何文件都不碰。
+- 删除后告知实际释放量；用户选择保留时，告知文件位置、总体量和约定的下次删除时机。
+- macOS 不生成 CSV，只有调用方保存的 scan JSON（如 `/tmp/storage_scan.json`），同理在本轮结束后询问是否删除。
+- 报告里展示的清理命令与这里无关——那些是用户数据的清理命令，仍只展示不执行。
 
 ## 依赖与运行前提
 
