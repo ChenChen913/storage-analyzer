@@ -1,5 +1,16 @@
 # Windows 常见应用缓存安全路径（纯缓存 vs 用户数据）
 
+> 本文件按需阅读：对浏览器 profile / 微信 / QQLive 等应用数据目录做 🟢 分类或执行删除前必读。
+
+## 目录
+
+- 浏览器（Edge / Chrome）
+- 微信（xwechat）
+- 腾讯视频（QQLive）
+- 包管理器缓存
+- 应用更新器残留
+- 实测释放大小参考
+
 分析时，对每个 🟢 候选项目必须用 `drilldown.py` 深入到子目录级别，判断哪些是纯缓存（可删）、哪些包含用户数据（不可删）。
 
 **核心原则：用户数据 = 登录态（Cookies/Token）、历史记录（History）、偏好设置（Preferences）、扩展数据（Extensions）、应用自身数据库。缓存 = 临时文件、编译产物、下载缓存、日志。**
@@ -31,6 +42,38 @@ Profile 路径：`%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\Default\\`（Edge�
 | `Session Storage\` | 会话数据 | ❌ | 当前会话 |
 | `Bookmarks` / `Bookmarks.bak` | 用户数据 | ❌ | 书签 |
 | `Login Data` / `Login Data-journal` | 登录态 | ❌ | 保存的密码 |
+
+### 只删纯缓存目录
+
+`Cache/`、`Code Cache/`、`GPUCache/`、`Service Worker/`、`DawnCache/`、`Shared Dictionary/`、`component_crx_cache/`、`extensions_crx_cache/`（注意不是 `Extensions/` 本身）、`GrShaderCache/`。
+
+### 清理操作流程
+
+1. 先 `drilldown.py` 深入 profile 目录，逐项识别缓存 vs 用户数据
+2. 列出要删的精确路径给用户确认
+3. 删除前检查浏览器是否在运行（`tasklist | grep -i "chrome|msedge"`），有 msedgewebview2.exe 也要杀
+4. 只 `rm -rf` 缓存子目录，不动文件级别的 Cookies/History 等
+5. 删完后验证 Cookies 和 Login Data 文件仍然存在
+
+### 登录态逐文件快照核对（必做）
+
+删除前后对 `Cookies`、`Login Data`、`Web Data`、`History`、`Preferences`、`Bookmarks`、`Extensions` 逐项比字节数（文件被锁时用 `os.stat().st_size`）。Chrome 运行时 `Cookies` 被独占锁（读会 `PermissionError`），此时只能删 `Code Cache` 与 `User Data\{component_crx_cache,extensions_crx_cache}`；`Cache` / `Service Worker` 需先关浏览器。为绝对避免用户重新登录，可主动跳过 `Service Worker`（它是唯一可能携带站点级会话数据的目录）。
+
+### Chrome 运行时会锁住缓存文件
+
+删除 Chrome 缓存目录（如 `Shared Dictionary`、`Code Cache`）时，如果 Chrome 正在运行，文件可能被锁定：
+
+```
+rm: cannot remove '.../Shared Dictionary/db': Device or resource busy
+```
+
+- 先关闭 Chrome，再删缓存目录
+- 或告知用户：该缓存项需关掉浏览器后才能清理，下次关闭 Chrome 时自动释放
+- `Code Cache` 和 `extensions_crx_cache` 通常不被锁，可以边用 Chrome 边删
+
+### 运行中应用锁文件
+
+Chrome、微信等运行时会将部分文件锁定（`mmap`、`db` 文件）。删除时遇到 `Device or resource busy` 不用慌——关掉应用后自动释放，或告知用户该缓存项需下次关闭应用时清理。
 
 ---
 
