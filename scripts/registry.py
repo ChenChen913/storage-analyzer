@@ -4,27 +4,54 @@
 解决的问题：跨轮失忆。每轮分析都是「从头再看」，导致同目录同类文件反复成为「新发现」。
 
 用法：
-  python registry.py baseline [--csv <CSV>] [--min-mb 20] [--drive C]
+  python registry.py baseline [--csv <CSV> ...] [--min-mb 20]
       从 CSV 建立/更新档案基线，采集目录大小与活跃度（两层 mtime）。
-  python registry.py diff [--csv <CSV>] [--min-mb 20]
-      输出增量审计报告：新目录 / 增大目录 / 复活目录 / 未定性目录。
+      --csv 可传多个文件（如 C、D 两盘）；缺省自动发现 %TEMP%\\scan_*.csv。
+  python registry.py diff [--csv <CSV> ...] [--min-mb 20]
+      输出增量审计报告：新目录 / 增大目录 / 复活目录 / 未定性目录，
+      并写 state/last_diff.json 供报告标注「新发现 / 删后复发」。
   python registry.py mark <path> <green|yellow|red|keep> "<note>"
       agent 定性后写回档案（防止下轮重复定性）。
   python registry.py stats
       档案统计：已定性/未定性数量、覆盖体积。
 
-档案位置：<skill>\state\registry.json（与 Trae/hermes 经 junction 共享同一份）
+档案位置：<skill>\\state\\registry.json（可用 STORAGE_ANALYZER_STATE 环境变量覆盖目录）
 CSV 格式："路径",大小（Everything 导出，无表头）；溢出值 >= 2^63 置 0。
 """
 import os
 import sys
+import glob
 import json
 import time
 import argparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-STATE_DIR = os.path.join(HERE, "..", "state")
+STATE_DIR = os.environ.get("STORAGE_ANALYZER_STATE") or os.path.join(HERE, "..", "state")
 REG_FILE = os.path.join(STATE_DIR, "registry.json")
+DIFF_FILE = os.path.join(STATE_DIR, "last_diff.json")
+
+
+def resolve_csvs(arg_csv):
+    """--csv 可传多个；缺省自动发现 TEMP 下的 scan_*.csv，避免单盘误判。"""
+    if arg_csv:
+        return arg_csv
+    temp = os.environ.get("TEMP") or os.environ.get("TMP") or "."
+    found = sorted(glob.glob(os.path.join(temp, "scan_*.csv")))
+    return found or [os.path.join(temp, "scan_C.csv")]
+
+
+def load_csvs(paths):
+    """合并多盘 CSV -> ({目录: 直接文件字节}, 实际读取的 CSV 数)"""
+    direct = {}
+    used = 0
+    for p in paths:
+        if not os.path.exists(p):
+            print(f"CSV 不存在，跳过: {p}", file=sys.stderr)
+            continue
+        used += 1
+        for d, sz in load_csv(p).items():
+            direct[d] = direct.get(d, 0) + sz
+    return direct, used
 
 
 def load_csv(csv_path):
@@ -88,7 +115,7 @@ def mtime2(p, max_depth=2, cur=0):
 
 def load_reg():
     if os.path.exists(REG_FILE):
-        with open(REG_FILE, encoding="utf-8") as f:
+        with open(REG_FILE, encoding="utf-8-sig") as f:
             return json.load(f)
     return {"version": 1, "updated_at": "", "dirs": {}}
 
@@ -101,7 +128,12 @@ def save_reg(reg):
 
 
 def cmd_baseline(args):
-    direct = load_csv(args.csv)
+    paths = resolve_csvs(args.csv)
+    direct, n_csv = load_csvs(paths)
+    if not n_csv:
+        print("没有可用的 CSV，基线未更新", file=sys.stderr)
+        sys.exit(1)
+    print(f"读取 {n_csv} 个 CSV: " + ", ".join(os.path.basename(p) for p in paths if os.path.exists(p)))
     tree = build_tree(direct)
     reg = load_reg()
     now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -123,12 +155,15 @@ def cmd_baseline(args):
             }
             n_new += 1
         else:
+            old_size = ent.get("size", 0)
             was_deleted = ent.get("deleted", False)
             if was_deleted and sz > 0:
                 ent["resurrected"] = ent.get("resurrected", 0) + 1
+                ent["last_resurrected"] = now
             ent.update({"size": sz, "last_seen": now, "deleted": False})
-            # 活跃度只对变化明显或无记录的重新采集，控制耗时
-            if abs(sz - ent.get("size", 0)) > 10 * 2**20 or not ent.get("mtime"):
+            # 活跃度只对变化明显或无记录的重新采集，控制耗时。
+            # 注意必须先保存旧大小再 update，否则差值恒为 0。
+            if abs(sz - old_size) > 10 * 2**20 or not ent.get("mtime"):
                 ent["mtime"] = mtime2(d)
 
     # 本轮没见到的 -> deleted
@@ -143,14 +178,19 @@ def cmd_baseline(args):
 
 
 def cmd_diff(args):
-    if not os.path.exists(args.csv):
-        print(f"CSV 不存在: {args.csv}", file=sys.stderr)
+    paths = resolve_csvs(args.csv)
+    direct, n_csv = load_csvs(paths)
+    if not n_csv:
+        print("没有可用的 CSV，无法做增量审计", file=sys.stderr)
         sys.exit(1)
-    direct = load_csv(args.csv)
     tree = build_tree(direct)
     reg = load_reg()
     thresh = args.min_mb * 2**20
     now = time.time()
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+    # 用上一轮 diff 的时间做检查点，而不是靠「档案里有没有」。
+    # 这样即使本轮先跑过 baseline（新目录已建档），diff 仍能把它标成新发现。
+    last_check = reg.get("last_diff_check")
 
     new_items, grew_items, res_items, unrev_items = [], [], [], []
     for d, sz in tree.items():
@@ -160,10 +200,12 @@ def cmd_diff(args):
         if ent is None:
             new_items.append((d, sz))
         else:
+            if last_check and ent.get("first_seen", "") > last_check:
+                new_items.append((d, sz))
             delta = sz - ent.get("size", 0)
             if delta >= 50 * 2**20:
                 grew_items.append((d, sz, delta))
-            if ent.get("resurrected", 0) > 0:
+            if last_check and ent.get("last_resurrected", "") > last_check:
                 res_items.append((d, sz))
             if not ent.get("tier"):
                 unrev_items.append((d, sz))
@@ -187,6 +229,22 @@ def cmd_diff(args):
         for d, s in sorted(stale, key=lambda x: -x[1])[:25]:
             days = (now - reg["dirs"][d]["mtime"]) / 86400
             print(f" {s/2**20:>9.1f} MB  {days:>4.0f} 天未动  {d}")
+
+    # 供报告标注用：只存路径，不存体积，文件很小。
+    payload = {
+        "generated_at": now_str,
+        "csv": [p for p in paths if os.path.exists(p)],
+        "new": [d for d, _ in new_items],
+        "resurrected": [d for d, _ in res_items],
+        "grew": [d for d, _, _ in grew_items],
+    }
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(DIFF_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=1)
+    reg["last_diff_check"] = now_str
+    save_reg(reg)
+    print(f"\n增量清单已写入: {DIFF_FILE}")
+    print(f"读取 {n_csv} 个 CSV: " + ", ".join(os.path.basename(p) for p in paths if os.path.exists(p)))
 
 
 def cmd_mark(args):
@@ -221,13 +279,14 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("baseline")
-    p.add_argument("--csv", default=os.path.join(os.environ.get("TEMP", "."), "scan_C.csv"))
+    p.add_argument("--csv", nargs="+", default=None,
+                   help="一个或多个 Everything CSV；缺省自动发现 %%TEMP%%\\scan_*.csv")
     p.add_argument("--min-mb", type=int, default=20)
-    p.add_argument("--drive", default="C")
     p.set_defaults(func=cmd_baseline)
 
     p = sub.add_parser("diff")
-    p.add_argument("--csv", default=os.path.join(os.environ.get("TEMP", "."), "scan_C.csv"))
+    p.add_argument("--csv", nargs="+", default=None,
+                   help="一个或多个 Everything CSV；缺省自动发现 %%TEMP%%\\scan_*.csv")
     p.add_argument("--min-mb", type=int, default=20)
     p.set_defaults(func=cmd_diff)
 

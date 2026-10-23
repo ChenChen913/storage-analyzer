@@ -90,6 +90,9 @@
   .item-badge{font-size:12px;font-weight:600;color:var(--green);background:var(--green-bg);
     padding:2px 10px;border-radius:20px;white-space:nowrap}
   .item-badge:empty{display:none}
+  .item-history{font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;white-space:nowrap}
+  .item-history.new{color:var(--accent);background:var(--accent-bg)}
+  .item-history.resurrected{color:var(--red);background:var(--red-bg)}
   .item.cleaned .item-name{text-decoration:line-through;color:var(--sub);font-weight:500}
   .item.cleaned .item-size{color:var(--sub)}
   .item.cleaned{opacity:.85}
@@ -295,6 +298,19 @@ function parseGB(str){
   return v;
 }
 
+function historyBadge(it){
+  if(!it || !it.history) return '';
+  const label = it.history==='new' ? '新发现'
+    : it.history==='resurrected' ? '删后复发' : '';
+  return label ? `<span class="item-history ${esc(it.history)}">${label}</span>` : '';
+}
+
+function activityField(it){
+  if(!it || !it.last_active) return '';
+  const age = it.days_idle>=0 ? `（${esc(it.days_idle)} 天前）` : '';
+  return `<div class="field"><div class="label">最后活动</div><span class="note">${esc(it.last_active)}${age}</span></div>`;
+}
+
 function renderTop5(rows){
   if(!rows||!rows.length) return '';
   const body = rows.map(r=>`<tr>
@@ -302,7 +318,7 @@ function renderTop5(rows){
     <td><span class="dot ${esc(r.tier)}"></span></td>
     <td class="size">${esc(cleanSize(r.size))}</td>
     <td class="type">${esc(r.type)}</td>
-    <td><b>${esc(r.name)}</b></td>
+    <td><b>${esc(r.name)}</b> ${historyBadge(r)}</td>
     <td class="path">${esc(r.path)}</td>
     <td>${esc(r.note)}</td>
   </tr>`).join('');
@@ -319,7 +335,7 @@ function renderGreen(items){
       : `<div class="field"><div class="label">清理前需关闭</div><span class="note">无需关闭任何进程</span></div>`;
     const cmds=(it.commands||[]).map(cmdBlock).join('');
     return card('green', it.name, it.size_estimate, it.path,
-      procs + `<div class="field"><div class="label">清理命令（自行确认后执行）</div>${cmds}</div>` + delBlock(it));
+      procs + `<div class="field"><div class="label">清理命令（自行确认后执行）</div>${cmds}</div>` + delBlock(it), it);
   }).join('');
   return section('🟢 可自动清理（纯缓存/临时文件，可再生）', items.length, cards, greenBatchActions(items));
 }
@@ -434,7 +450,7 @@ function renderYellow(items){
     `<div class="field"><div class="label">内容画像</div>${esc(it.content_profile)}</div>
      <div class="field"><div class="label">为什么需要人工判断</div>${esc(it.why_manual)}</div>
      <div class="field"><div class="label">处置路径</div>${esc(it.disposal)}</div>
-     <div class="risk">⚠️ ${esc(it.risk)}</div>` + yellowActions(it))).join('');
+     <div class="risk">⚠️ ${esc(it.risk)}</div>` + yellowActions(it), it)).join('');
   return section('🟡 需你参与的手动清理（含用户数据）', items.length, cards);
 }
 
@@ -462,7 +478,7 @@ function renderRed(items){
   const cards = items.map(it=>card('red', it.name, it.size||'', it.path,
     `<div class="field"><div class="label">为什么不建议手删</div>${esc(it.why_keep)}</div>
      <div class="field"><div class="label">卸载 / 释放建议</div>${esc(it.indirect_release)}</div>
-     ${it.auto_reclaim?`<div class="field"><div class="label">是否自动回收</div>${esc(it.auto_reclaim)}</div>`:''}` + redActions(it))).join('');
+     ${it.auto_reclaim?`<div class="field"><div class="label">是否自动回收</div>${esc(it.auto_reclaim)}</div>`:''}` + redActions(it), it)).join('');
   return section('🔴 谨慎清理（建议走正规卸载，别手动拖删）', items.length, cards);
 }
 
@@ -482,17 +498,19 @@ function pathCopyBtn(path){
   return `<button class="path-copy" title="复制路径" onclick="navigator.clipboard.writeText(${JSON.stringify(path)}).then(()=>{this.textContent='✓';setTimeout(()=>this.textContent='复制路径',1200)})">复制路径</button>`;
 }
 
-function card(tier,name,size,path,inner){
+function card(tier,name,size,path,inner,it){
   return `<div class="item ${tier}">
     <div class="item-head" onclick="this.parentNode.classList.toggle('open')">
       <span class="dot ${tier}"></span>
       <span class="item-name">${esc(name)}</span>
       <span class="item-badge"></span>
+      ${historyBadge(it)}
       ${size?`<span class="item-size">${esc(cleanSize(size))}</span>`:''}
       <span class="chev">▶</span>
     </div>
     <div class="item-body">
       <div class="item-path"><span>${esc(path)}</span>${pathCopyBtn(path)}</div>
+      ${activityField(it)}
       ${inner}
     </div></div>`;
 }

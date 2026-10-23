@@ -9,7 +9,8 @@
 输入分析流程，agent 只需复核定性，不需要枚举文件。
 
 用法：
-  python rules.py [--csv <CSV>] [--min-mb 1]
+  python rules.py [--csv <CSV> ...] [--min-mb 1]
+  --csv 可传多个文件（如 C、D 两盘）；缺省自动发现 %TEMP%\\scan_*.csv。
 
 输出 JSON 到 stdout：
   green_candidates     规则直接判绿的成组路径（zip 组/转储组/日志组）
@@ -19,6 +20,7 @@
 import os
 import re
 import sys
+import glob
 import json
 import argparse
 from collections import defaultdict
@@ -31,7 +33,7 @@ CACHE_BASENAMES = {
     "dawncache", "component_crx_cache", "extensions_crx_cache", "crashdumps",
     "imagecache", "jcef_cache", "icon-cache", "compile-cache", "cef_cache",
     "webview2cache", "cacheddata", "cachedextensionvsixs", "cachestorage",
-    "sharedclientcache", "tmp", "temp", "logs", "log",
+    "sharedclientcache", "shared dictionary", "tmp", "temp", "logs", "log",
 }
 
 # 语义化版本目录名（bin 下多版本共存判定）
@@ -60,6 +62,14 @@ def load_csv(csv_path):
     return out
 
 
+def resolve_csvs(arg_csv):
+    if arg_csv:
+        return arg_csv
+    temp = os.environ.get("TEMP") or os.environ.get("TMP") or "."
+    found = sorted(glob.glob(os.path.join(temp, "scan_*.csv")))
+    return found or [os.path.join(temp, "scan_C.csv")]
+
+
 def dsize_from_files(files):
     """文件清单 -> {目录: 直接文件字节} -> 全树"""
     direct = defaultdict(int)
@@ -85,12 +95,24 @@ def dsize_from_files(files):
 
 def main():
     ap = argparse.ArgumentParser(description="清理规则引擎")
-    ap.add_argument("--csv", default=os.path.join(os.environ.get("TEMP", "."), "scan_C.csv"))
+    ap.add_argument("--csv", nargs="+", default=None,
+                    help="一个或多个 Everything CSV；缺省自动发现 %%TEMP%%\\scan_*.csv")
     ap.add_argument("--min-mb", type=float, default=1.0)
     args = ap.parse_args()
     min_b = int(args.min_mb * 2**20)
 
-    files = load_csv(args.csv)
+    paths = resolve_csvs(args.csv)
+    files = []
+    used = 0
+    for p in paths:
+        if not os.path.exists(p):
+            print(f"CSV 不存在，跳过: {p}", file=sys.stderr)
+            continue
+        used += 1
+        files.extend(load_csv(p))
+    if not used:
+        print("没有可用的 CSV", file=sys.stderr)
+        sys.exit(1)
     tree, direct = dsize_from_files(files)
     U = os.path.expanduser("~")
 
@@ -183,6 +205,7 @@ def main():
                                         key=lambda x: -sum(v["size_bytes"] for v in x["removable"])),
         "cache_families": sorted(cache_families, key=lambda x: -x["size_bytes"]),
         "summary": {
+            "csv_files": used,
             "green_groups": len(green_candidates),
             "green_bytes": sum(g["size_bytes"] for g in green_candidates),
             "multi_version_groups": len(multi_version_groups),

@@ -29,6 +29,7 @@ description: >
 - **已清理项不再展示。** 用户授权清理后、重新生成报告时，已清理的绿灯项直接从 JSON 中移除，不再出现在网页上——既然已经清了，没理由还占着版面。🟡/🔴 不受此限（它们代表"决策"而非"可执行操作"）。唯一的例外：用户明确说"把清理过的也列出来看看"。
 - **跨轮记忆（v3 新增）。** 每轮分析结束必须跑 `registry.py baseline` 更新档案；分析中每个 ≥20MB 目录的定性结论必须用 `registry.py mark` 写回。下轮分析从 `registry.py diff` 的增量清单开始，而不是从头全量重看。没有跑 diff 就开始分析，视为流程违规。
 - **成套清理由规则引擎兜底（v3 新增）。** 清理候选清单必须先跑 `rules.py` 拿成组结果，agent 只做复核定性。禁止按文件名模式手工挑文件——实战教训：手工挑了 9 个 lingma zip，同目录 28 个同类 zip 漏网，下一轮成了"新发现"。
+- **审查顺序由应用登记表驱动（v3 新增）。** 每轮先跑 `apps.py build`，把「未审查应用清单」排在 TopN 之前；看完一个应用立刻 `apps.py mark` 写回，避免同一应用每轮都从零看起。
 
 ## 执行流程
 
@@ -115,28 +116,37 @@ macOS 单盘（/），`du` 速度快，但多卷（外置盘等）同理并行�
 
 ### Step 1.5 增量审计（v3 新增，每轮必跑）
 
-扫描完成后、人工分析开始前，依次跑三个增量工具。它们解决的是六轮实战暴露的结构性问题：跨轮失忆、成套清理失败、卸载残留无人认领。
+扫描完成后、人工分析开始前，依次跑四个增量工具。它们解决的是六轮实战暴露的结构性问题：跨轮失忆、成套清理失败、卸载残留无人认领、没审过的应用被 TopN 挤掉。
 
 ```bash
 # 1) 规则引擎：成组命中清理候选（plugins zip 组 / 多版本 bin / 崩溃转储 / 巨型日志）
-python scripts/rules.py --csv "%TEMP%\scan_C.csv" > rules_hits.json
+python scripts/rules.py --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv" > rules_hits.json
 # 输出的 green_candidates / multi_version_groups 直接进分析流程，agent 只复核不定性枚举
 
-# 2) 卸载残留检测：数据目录存在但应用本体已不在（Programs/Program Files/开始菜单/卸载注册表四重比对）
-python scripts/orphan.py --min-mb 50 > orphans.json
-# 输出自动附最后活动时间，days_idle 大的是高置信度弃用候选（Kiro 案例：90 天 + 本体不存在）
+# 2) 卸载残留检测：数据目录存在但应用本体已不在（Programs/Program Files/WindowsApps/开始菜单/卸载注册表五重比对）
+python scripts/orphan.py --csv "%TEMP%\scan_C.csv" --min-mb 50 > orphans.json
+# 输出自动附最后活动时间与置信度（high/medium/low），days_idle 大的是高置信度弃用候选
 
-# 3) 档案 diff（第二轮起）：与历史基线对比，只看增量和未定性项
-python scripts/registry.py diff --csv "%TEMP%\scan_C.csv"
+# 3) 应用登记表：枚举安装侧应用（Programs / Program Files / 注册表 InstallLocation）+ 用户侧数据目录，
+#    维护「未审查应用清单」。只扫 C 盘会漏掉装在 D 盘的 TRAE/Cursor/VS Code，注册表是跨盘安装的兜底来源
+python scripts/apps.py build --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
+python scripts/apps.py list --unreviewed --min-mb 20
+# 看完一个应用后：python scripts/apps.py mark <key> --note "结论"
+
+# 4) 档案 diff（第二轮起）：与历史基线对比，只看增量和未定性项
+python scripts/registry.py diff --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
 # 输出：新目录 / 增大≥50MB / 删后复活(活水缓存) / 未定性 / 超30天无活动的未定性目录
+# 同时写 state/last_diff.json，报告用它标注「新发现 / 删后复发」
 ```
 
-**首轮**：先跑 `registry.py baseline` 建档（采集全量目录大小 + 两层 mtime 活跃度），再跑 rules 和 orphan。
-**分析顺序**：diff 增量清单 > orphans（弃用嫌疑最大）> rules 命中组 > 全量 TopN 兜底。优先看「谁没被审过」，而不是「谁大看谁」。
-**分析过程中**：每个定性的目录立刻 `python scripts/registry.py mark <路径> <green|yellow|red|keep> "<一句话理由>"` 写回档案。
+**首轮**：先跑 `registry.py baseline` 建档（采集全量目录大小 + 两层 mtime 活跃度），再跑 rules、orphan、apps build。
+**分析顺序**：未审查应用清单 > diff 增量清单 > orphans（弃用嫌疑最大）> rules 命中组 > 全量 TopN 兜底。优先看「谁没被审过」，而不是「谁大看谁」。
+**分析过程中**：每个定性的目录立刻 `python scripts/registry.py mark <路径> <green|yellow|red|keep> "<一句话理由>"` 写回档案；每个看完的应用立刻 `python scripts/apps.py mark <key> --note "<一句话结论>"`。
 **分析结束后**：再跑一次 `registry.py baseline` 固化本轮状态（含复活检测）。
 
-三个脚本的完整用法与设计说明：`scripts/registry.py` / `scripts/rules.py` / `scripts/orphan.py` 文件头注释。规则表可持续追加到 `scripts/rules.py` 的 RULES 区（每轮实战新学到的模式，如某 IDE 的特殊缓存名）。
+> `--csv` 支持传多个文件，缺省会自动发现 `%TEMP%\scan_*.csv`。**不要只传 C 盘 CSV 就跑 baseline**，否则 D 盘目录会被误标成「已删除」。
+
+脚本完整用法与设计说明：`scripts/registry.py` / `scripts/rules.py` / `scripts/orphan.py` / `scripts/apps.py` 文件头注释。规则表可持续追加到 `scripts/rules.py` 的 RULES 区（每轮实战新学到的模式，如某 IDE 的特殊缓存名）。
 
 ### Step 2 分析与分级
 
@@ -187,6 +197,8 @@ python scripts/registry.py diff --csv "%TEMP%\scan_C.csv"
 ### Step 3 生成交互报告
 
 把分析结果写成 analysis JSON（schema 见 `scripts/build_report.py` 顶部注释）。
+
+报告会自动读取 `state/last_diff.json` 和 `state/registry.json`，给每项补「新发现 / 删后复发」标记和「最后活动」时间（没有标记的就是上轮已存在）。所以**必须先跑 `registry.py diff` 再生成报告**；静态模式可用 `--no-history` 关闭。
 
 **🟢 项必须带 `trash_paths`**（具体可删的绝对路径数组，区别于人类可读的 `path` 展示字段）——这是网页删除按钮的前提，漏了按钮就不出现。Windows 路径用反斜杠，确保在 `%USERPROFILE%` 内（白名单校验前提）。
 
@@ -278,14 +290,14 @@ Windows 用户常用 git-bash（MSYS）作为终端。`rd /s /q` 和 `del /q /f 
 
 **错误做法：**
 ```bash
-rd /s /q "C:\Users\<user>\.cache"          # ❌ rd: command not found
+rd /s /q "C:\Users\11853\.cache"          # ❌ rd: command not found
 cmd //c "rd /s /q \"C:\path\with\space\"" # ❌ 引号转义容易出错（乱码报错）
 ```
 
 **正确做法（MSYS 路径 + rm -rf）：**
 ```bash
-rm -rf "/c/Users/<user>/.cache"
-rm -rf "/c/Users/<user>/AppData/Local/Google/Chrome for Testing"  # 含空格也能用
+rm -rf "/c/Users/11853/.cache"
+rm -rf "/c/Users/11853/AppData/Local/Google/Chrome for Testing"  # 含空格也能用
 ```
 
 - 路径用 MSYS 风格：`/c/` 代替 `C:\`，正斜杠

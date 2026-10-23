@@ -20,24 +20,35 @@ Schema (all sections optional except system):
   "summary": {overview, tier_stats:{green,yellow,red}, priority:[...], long_term:[...]}
 }
 """
+import argparse
 import json
 import os
 import sys
+
+import history
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, "..", "assets", "report_template.html")
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
-    src = sys.argv[1]
-    out = sys.argv[2] if len(sys.argv) > 2 else os.path.expanduser(
-        "~/Desktop/storage-report.html")
+    ap = argparse.ArgumentParser(description="生成静态存储分析报告")
+    ap.add_argument("src", help="analysis JSON")
+    ap.add_argument("out", nargs="?", default=os.path.expanduser("~/Desktop/storage-report.html"))
+    ap.add_argument("--diff", default=None, help="registry.py diff 写出的 last_diff.json")
+    ap.add_argument("--registry", default=None, help="state/registry.json")
+    ap.add_argument("--no-history", action="store_true", help="不标注新增/复发与活跃度")
+    args = ap.parse_args()
 
-    with open(src, "r", encoding="utf-8") as f:
+    with open(args.src, "r", encoding="utf-8") as f:
         data = json.load(f)
+    if not args.no_history:
+        try:
+            stats = history.annotate(data, reg_path=args.registry, diff_path=args.diff)
+            print(f"增量标注: 新发现 {stats['new']} | 删后复发 {stats['resurrected']} "
+                  f"| 活跃度 {stats['activity']} | 档案命中 {stats['known']}")
+        except Exception as e:
+            print(f"增量标注跳过: {e}", file=sys.stderr)
     with open(TEMPLATE, "r", encoding="utf-8") as f:
         tpl = f.read()
 
@@ -45,10 +56,9 @@ def main():
     # 静态报告不带删除能力（DELETE=null），删除按钮只在 server.py 服务时出现
     html = tpl.replace("__REPORT_DATA__", blob).replace("__DELETE_CONFIG__", "null")
 
-    with open(out, "w", encoding="utf-8") as f:
+    with open(args.out, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"报告已生成: {out}")
-    print(f"打开: open '{out}'")
+    print(f"报告已生成: {args.out}")
 
 
 if __name__ == "__main__":

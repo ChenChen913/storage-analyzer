@@ -4,9 +4,9 @@
 解决的问题：应用卸载后数据目录无人认领。实战教训：Kiro 卸载 90 天后其 720MB
 数据目录才在第六轮被发现；Codex 四处分布 1.7GB 由用户口述才清除。
 
-机制：枚举用户侧数据目录（%APPDATA% / %LOCALAPPDATA% / ~ 点目录），对照三处
-安装证据（程序目录 / 开始菜单 / 注册表卸载键）判定应用是否还在。数据在而本体
-找不到 -> 卤儿候选，附最后活动时间辅助判断。
+机制：枚举用户侧数据目录（%APPDATA% / %LOCALAPPDATA% / ~ 点目录），对照五处
+安装证据（Programs / Program Files / WindowsApps 包仓库 / 开始菜单 / 卸载注册表）
+判定应用是否还在。数据在而本体找不到 -> 孤儿候选，附最后活动时间与置信度。
 
 用法：
   python orphan.py [--min-mb 20] [--csv <CSV>]
@@ -113,7 +113,36 @@ def collect_installed_names():
             if f.endswith(".lnk"):
                 names.add(norm(os.path.splitext(f)[0]))
 
-    # 4) 注册表卸载键
+    # 4) WindowsApps（Store 应用）：包名形如 Publisher.App_版本_架构_哈希
+    # 目录本身受 ACL 保护，普通权限 scandir 会 PermissionError，改从注册表
+    # AppModel 仓库枚举包全名（HKCR 可读，实测 400+ 包），目录枚举仅作回退。
+    pkgs = set()
+    repo = r"Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, repo) as k:
+            n = winreg.QueryInfoKey(k)[0]
+            for i in range(n):
+                try:
+                    pkgs.add(winreg.EnumKey(k, i))
+                except OSError:
+                    pass
+    except OSError:
+        wa = r"C:\Program Files\WindowsApps"
+        if os.path.isdir(wa):
+            try:
+                pkgs = {e.name for e in os.scandir(wa)}
+            except OSError:
+                pass
+    for full in pkgs:
+        pkg = full.split("_")[0]
+        names.add(norm(pkg))
+        # 末段短名用于匹配「Anthropic.Claude -> claude」这类；纯数字段（1.6/1.7）
+        # 会污染集合，导致 .m2 之类被 '2' 误判为已安装，必须排除。
+        tail = pkg.rsplit(".", 1)[1] if "." in pkg else ""
+        if len(tail) >= 3 and not tail.isdigit():
+            names.add(norm(tail))
+
+    # 5) 注册表卸载键
     for hive, key_path in [
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
@@ -226,12 +255,22 @@ def main():
         if sz < min_b:
             continue
         m = mtime2(p)
+        days = round((time.time() - m) / 86400, 0) if m else -1
+        if days < 0:
+            confidence = "unknown"
+        elif days >= 90:
+            confidence = "high"
+        elif days >= 30:
+            confidence = "medium"
+        else:
+            confidence = "low"
         orphans.append({
             "path": p,
             "size_bytes": sz,
             "last_active": time.strftime("%Y-%m-%d", time.localtime(m)) if m else "未知",
-            "days_idle": round((time.time() - m) / 86400, 0) if m else -1,
-            "note": "数据目录存在，未找到对应安装（Programs/Program Files/开始菜单/卸载注册表）",
+            "days_idle": days,
+            "confidence": confidence,
+            "note": "数据目录存在，未找到对应安装（Programs/Program Files/WindowsApps/开始菜单/卸载注册表）",
         })
 
     orphans.sort(key=lambda x: -x["size_bytes"])

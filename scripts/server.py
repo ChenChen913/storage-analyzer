@@ -6,7 +6,7 @@ interactive report, and exposes POST /action to move green-tier paths to the
 Recycle Bin / Trash or delete them outright. Stop with Ctrl+C.
 
 Usage:
-    Windows: python scripts\server.py %TEMP%\analysis.json
+    Windows: python scripts\\server.py %TEMP%\\analysis.json
     macOS:   python3 scripts/server.py /tmp/analysis.json
 
 SAFETY MODEL — read before changing:
@@ -49,6 +49,13 @@ def expand(p):
 def load(src):
     with open(src, encoding="utf-8") as f:
         data = json.load(f)
+    try:
+        import history
+        stats = history.annotate(data)
+        print(f"增量标注: 新发现 {stats['new']} | 删后复发 {stats['resurrected']} "
+              f"| 活跃度 {stats['activity']} | 档案命中 {stats['known']}")
+    except Exception as e:
+        print(f"增量标注跳过: {e}", file=sys.stderr)
     with open(TEMPLATE, encoding="utf-8") as f:
         tpl = f.read()
     # 三套白名单，权限从严到宽：
