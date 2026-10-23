@@ -1,10 +1,10 @@
 ---
 name: storage-analyzer
 description: >
-  Windows / macOS 只读存储分析助手（自动识别系统）。扫描整机磁盘占用，找出
+  Windows / macOS 存储分析助手（自动识别系统，扫描阶段全程只读）。扫描整机磁盘占用，找出
   占空间大户，把每一项分成 🟢可自动清理 / 🟡需人工判断 / 🔴谨慎清理 三级并给出
   可执行处置方案，生成排版精美、可折叠、命令可一键复制的交互式 HTML 报告，并可
-  起本地服务在网页上一键删除（移回收站/直接删）。扫描全程只读。务必在以下场景
+  起本地服务在网页上一键删除（移回收站/直接删）。务必在以下场景
   使用：用户说"存储分析""磁盘满了""C盘/硬盘满了""空间不够""清理空间"
   "清理磁盘""占空间""哪些东西占地方""帮我看看存储""看一下电脑存储/空间"
   "存储空间""电脑空间不够""内存满了/不够/不足""看下内存/存储"（中文口语里
@@ -154,6 +154,7 @@ python3 scripts/server.py /tmp/storage_analysis.json       # macOS
 
 ## 平台状态
 
-- **Windows**：已验证（Windows 10/11 + Python 3.11 + git-bash）。`scan.py` v2/v3 已实测 Everything、WizTree、walk 三种数据源与增量审计；`server.py` 报告渲染正常，回收站操作待后续实测验证。
-- **macOS**：完整实现并实测（扫描 / 报告 / 一键删除全验证过）。
+- **Windows**：本仓库维护者实测（Windows 10/11 + Python 3.11 + git-bash）。`scan.py` v2/v3 已实测 Everything、WizTree、walk 三种数据源与增量审计；`server.py` 报告渲染正常，回收站操作待完整实测。
+- **macOS**：上游作者的实现，保留扫描 / 报告 / 废纸篓删除逻辑；本仓库**从未复验**，且 macOS 无 CSV 通路，增量审计四件套不可用。
+- **Linux**：不支持，`scan.py` 显式返回 `unsupported_platform`。
 - 详细踩坑见 [lessons-learned-windows.md](references/lessons-learned-windows.md)，历史案例见 [win11-case-study-20260603.md](references/win11-case-study-20260603.md)、[win11-cleanup-case-20260618.md](references/win11-cleanup-case-20260618.md)、[win11-optimization-case-20260715.md](references/win11-optimization-case-20260715.md)。
