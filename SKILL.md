@@ -45,26 +45,31 @@ python3 --version  # 较少见，但也可能
 
 macOS 自带 python3，无需此步。
 
-### Step 1 扫描（只读）—— 全盘覆盖优先，Everything 加速
+### Step 1 扫描（只读）—— 全盘覆盖优先，索引工具加速
 
-**速度是体验的核心。** Windows 上 scan.py v2 采用**数据源插件化**：
+**速度是体验的核心。** Windows 上 scan.py v2 采用**数据源插件化**，按 `--source` 顺序尝试：
 
 1. **Everything 优先（推荐）**：自动探测 `es.exe`（`D:\Everything\es.exe`、`C:\Everything\es.exe`、Program Files、PATH），探测到即导出全盘文件清单（实测 350 万文件 5-6 秒/盘），单次遍历同时产出：目录聚合(2/3 层)、大文件 TopN、安装包、缓存目录、更新器目录、多版本目录。**实测整盘分析 ~18 秒**。
-2. **回退 os.scandir 全盘遍历**：无 Everything、或 Everything 已装但未启动（es.exe 报 IPC window not found）时自动回退，保证"全盘覆盖"而非固定目标列表（慢，30-90 分钟/盘，大磁盘强烈建议装 Everything）。
+2. **WizTree 次选（没装 Everything 时的最佳替代）**：自动探测 `wiztree64.exe`（Program Files、PATH、`%LOCALAPPDATA%`），命令行读 MFT 导出文件清单，速度接近 Everything，且不需要常驻服务。便携版用环境变量 `STORAGE_ANALYZER_WIZTREE=<exe 绝对路径>` 指定。默认 `/admin=0` 不弹 UAC；以管理员身份跑 scan.py 时可改 `/admin=1` 走 MFT 直读。
+3. **回退 os.scandir 全盘遍历**：两个工具都没有、或 Everything 已装但未启动（es.exe 报 IPC window not found）时自动回退，保证"全盘覆盖"而非固定目标列表（慢，30-90 分钟/盘）。
 
-**Windows（Everything 可用时）：**
+三者导出的 CSV 都会归一成同一份 `"路径",大小` 格式，后续聚合完全一致。默认 `--source auto` 按 Everything → WizTree → walk 顺序自动降级；也可 `--source everything|wiztree|walk` 强制指定（便于排查和基准测试，指定源失败则跳过该盘）。
+
+**Windows（索引工具可用时）：**
 ```bash
 # 全部固定盘一次分析（C/D/E...），写文件避免 stdout 编码问题
 python scripts/scan.py --out "%TEMP%\storage_scan.json"
 # 只扫指定盘 / 调整阈值
 python scripts/scan.py --drives C,D --top 50 --min-dir 20 --out "%TEMP%\storage_scan.json"
-# 强制 walk 回退（排查用）
+# 强制指定数据源（auto=Everything→WizTree→walk）
+python scripts/scan.py --drives C --source wiztree --out "%TEMP%\storage_scan.json"
+# 强制 walk 回退（排查用，等价 --source walk）
 python scripts/scan.py --drives C --no-everything --out "%TEMP%\storage_scan.json"
 ```
 
-**Windows（无 Everything / 需 drilldown 时）：**
+**Windows（无 Everything、无 WizTree / 需 drilldown 时）：**
 ```bash
-# C 盘：scan.py（Everything 不可用时走全盘 walk）
+# C 盘：scan.py（两个索引工具都不可用时走全盘 walk）
 python scripts/scan.py --drives C --out "C:\Users\<user>\AppData\Local\Temp\storage_scan.json" &
 # D/E 盘等：drilldown.py 做顶层分析（比全量递归快 10 倍以上）
 python scripts/drilldown.py "D:/" --min-mb 100 --limit 30 > "C:\Users\<user>\AppData\Local\Temp\d_scan.json" &
@@ -73,7 +78,7 @@ wait
 
 两步同时跑，总等待时间 = max(scan.py, drilldown)，而非两者之和。
 
-**覆盖保证（防止"漏盘/漏项"）：** 每轮分析必须确认输出里有 `coverage` 字段（method=everything|walk、drives 列表、files_scanned 文件数）。全盘清单 + 大文件 TopN 兜底是"不遗漏"的最低保障；只基于固定目标列表的分析一律视为不完整（教训见 [references/lessons-learned-windows.md](references/lessons-learned-windows.md) 4.1）。
+**覆盖保证（防止"漏盘/漏项"）：** 每轮分析必须确认输出里有 `coverage` 字段（`method` = everything / wiztree / walk，混用时形如 `everything+walk`；另含 `es_path` / `wiztree_path` / `drives` / `files_scanned`）。全盘清单 + 大文件 TopN 兜底是"不遗漏"的最低保障；只基于固定目标列表的分析一律视为不完整（教训见 [references/lessons-learned-windows.md](references/lessons-learned-windows.md) 4.1）。
 
 **大磁盘加速建议：** Everything 索引常驻，扫描成本≈0；无 Everything 时用多进程按盘根分片（SSD 近线性）+ `os.scandir` + 先粗后细。子 Agent 建议用于"多维度并行分析"而非 IO 扫描（瓶颈在磁盘）。详见 [references/everything-integration.md](references/everything-integration.md)。
 
@@ -99,12 +104,12 @@ python3 scripts/scan.py > /tmp/storage_scan.json
 macOS 单盘（/），`du` 速度快，但多卷（外置盘等）同理并行。
 
 `scan.py` 自动识别系统（`sys.platform`）：
-- **Windows**：全盘清单（Everything 优先，回退 os.scandir 全盘遍历），单遍聚合 drive_root(depth2/3)、big_files、installers、cache_dirs、updater_dirs、version_dirs、recycle_bin、dev_caches、running_apps；`system.disks` 含所有盘符（C:、D:……）；输出含 `coverage`（method/drives/files_scanned）。
-- **macOS**：扫 home、library、caches、containers、group_containers、app_support、applications、downloads、dev_caches，用 `du` 算大小。
+- **Windows**：全盘清单（Everything → WizTree → os.scandir 全盘遍历），单遍聚合 drive_root(depth2/3)、big_files、installers、cache_dirs、updater_dirs、version_dirs、recycle_bin、dev_caches、running_apps；`system.disks` 含所有盘符（C:、D:……）；输出含 `coverage`（method/es_path/wiztree_path/drives/files_scanned）。
+- **macOS**：扫 home、library、caches、containers、group_containers、app_support、applications、downloads、dev_caches，用 `du` 算大小；输出含 `coverage.method=du`。
 
-输出 JSON：`system`（系统/磁盘信息，含 `disk_name` 主盘名 + `disks` 全部盘）+ `groups`（各组子目录大小，已降序、过滤阈值以上）+ `coverage`（扫描方法/覆盖盘/文件数）+ `_hierarchy`（groups 间的父子包含关系，标注哪些组是其他组的子集，防止分析时重复统计）。读不到的目录标 `denied`，需在报告里列出并提示遗漏体量。
+输出 JSON：`system`（系统/磁盘信息，含 `disk_name` 主盘名 + `disks` 全部盘）+ `groups`（各组子目录大小，已降序、过滤阈值以上）+ `coverage`（扫描方法/数据源路径/覆盖盘/文件数）+ `_hierarchy`（groups 间的父子包含关系，标注哪些组是其他组的子集，防止分析时重复统计）。读不到的目录标 `denied`，需在报告里列出并提示遗漏体量。
 
-- **Windows 扫描耗时**：Everything 后端 ~18 秒/盘；walk 回退数分钟到数十分钟（百万文件级）。先告知用户预计时间。
+- **Windows 扫描耗时**：Everything 后端 ~18 秒/盘；WizTree 同为 MFT 级（秒级），无索引工具时 walk 回退数分钟到数十分钟（百万文件级）。先告知用户预计时间。
 
 > **Windows git-bash 环境特殊注意事项（重要）：**
 > 1. **`rd /s /q` 不可用**：`rd` 是 cmd.exe 内置命令，git-bash 不识别。替代方案：`cmd //c "rd /s /q <path>"` 或直接用 `rm -rf "/c/Users/..."`（MSYS 路径格式）。优先用 `rm -rf`，更简洁。
@@ -118,7 +123,7 @@ macOS 单盘（/），`du` 速度快，但多卷（外置盘等）同理并行�
 
 扫描完成后、人工分析开始前，依次跑四个增量工具。它们解决的是六轮实战暴露的结构性问题：跨轮失忆、成套清理失败、卸载残留无人认领、没审过的应用被 TopN 挤掉。
 
-> **仅 Windows 适用。** 这四个工具依赖 Everything 导出的 CSV 与 Windows 注册表/目录布局，macOS 没有 CSV 通路。macOS 上跳过 Step 1.5，直接进入 Step 2（scan.py + drilldown.py + build_report.py 已适配 macOS）。Linux 目前不支持。
+> **仅 Windows 适用。** 这四个工具依赖全盘清单 CSV（Everything / WizTree / walk 三种数据源格式一致）与 Windows 注册表/目录布局，macOS 没有 CSV 通路。macOS 上跳过 Step 1.5，直接进入 Step 2（scan.py + drilldown.py + build_report.py 已适配 macOS）。Linux 目前不支持。
 
 ```bash
 # 1) 规则引擎：成组命中清理候选（plugins zip 组 / 多版本 bin / 崩溃转储 / 巨型日志）
@@ -258,7 +263,7 @@ python3 scripts/build_report.py /tmp/storage_analysis.json ~/Desktop/storage-rep
 
 ## 平台状态
 
-- **Windows**：已验证通过（Windows 10/11 + Python 3.11 + git-bash）。`scan.py` v2 已实测：Everything 后端 18 秒完成 D 盘 197 万文件全盘分析（目录聚合/大文件/安装包/缓存/更新器/多版本六维输出），`coverage` 覆盖声明生效；walk 回退与 macOS 分支保持兼容。`server.py` 报告渲染正常；回收站操作（`SHFileOperationW`）待后续实测验证。踩坑实录见 [references/lessons-learned-windows.md](references/lessons-learned-windows.md)，Everything 集成方法见 [references/everything-integration.md](references/everything-integration.md)。历史完整案例见 [references/win11-case-study-20260603.md](references/win11-case-study-20260603.md)、[references/win11-cleanup-case-20260618.md](references/win11-cleanup-case-20260618.md)、[references/win11-optimization-case-20260715.md](references/win11-optimization-case-20260715.md)。
+- **Windows**：已验证通过（Windows 10/11 + Python 3.11 + git-bash）。`scan.py` v2 已实测：Everything 后端 18 秒完成 D 盘 197 万文件全盘分析（目录聚合/大文件/安装包/缓存/更新器/多版本六维输出），`coverage` 覆盖声明生效；WizTree 作为第二数据源已接入（CSV 归一化 + auto 降级链实测），walk 回退与 macOS 分支保持兼容。`server.py` 报告渲染正常；回收站操作（`SHFileOperationW`）待后续实测验证。踩坑实录见 [references/lessons-learned-windows.md](references/lessons-learned-windows.md)，Everything / WizTree 集成方法见 [references/everything-integration.md](references/everything-integration.md)。历史完整案例见 [references/win11-case-study-20260603.md](references/win11-case-study-20260603.md)、[references/win11-cleanup-case-20260618.md](references/win11-cleanup-case-20260618.md)、[references/win11-optimization-case-20260715.md](references/win11-optimization-case-20260715.md)。
 - **macOS**：完整实现并实测（扫描 / 报告 / 一键删除全验证过）。
 
 ## 常见陷阱 / Common Pitfalls
@@ -530,6 +535,20 @@ with open("C:/Users/.../Temp/storage_scan.json", "w", encoding="utf-8") as f:
 4. **execute_code 里跑 tasklist 等系统命令**：GBK 输出使 `text=True` 解码崩溃（UnicodeDecodeError），加 `encoding="gbk", errors="replace"`。
 
 5. **server.py 可用 execute_code 分离启动**：stdout 重定向到日志文件，sleep 4 秒后读日志拿 URL，比"前台抓 URL 再后台重启"少一步。`curl http://127.0.0.1:<port>/` 返回 200 + 完整 HTML 即验证通过（GET / 无需 token）。
+
+### WizTree 命令行导出要点（第二数据源）
+
+没有 Everything 时 scan.py 会探测 `wiztree64.exe`（Program Files / PATH / `%LOCALAPPDATA%`），也可用 `STORAGE_ANALYZER_WIZTREE=<exe 路径>` 指定便携版。手工验证：
+
+```cmd
+wiztree64.exe "C:\" /export="C:\tmp\wiz.csv" /exportfolders=0 /exportfiles=1 /admin=0
+```
+
+- **必须只导文件行（`/exportfolders=0 /exportfiles=1`）**：WizTree 的目录行 Name 以 `\` 结尾且 Size 是子树总量，混进来会把同一批字节重复计数。scan.py 的 `normalize_wiztree_csv` 会再过滤一遍，但仍建议命令行就限定只导文件。
+- **CSV 表头是 `File Name, Size, Allocated, Modified, Attributes, Files, Folders`**，`csv.reader` 解析（路径里可能有逗号，别用 split）。用 `Size`（逻辑大小）而不是 `Allocated`：硬链接文件的 Allocated 带前导 0 标记，口径不一致。
+- **默认 `/admin=0` 不弹 UAC**，走普通权限扫描，速度仍远快于 walk；以管理员身份运行 scan.py 时可改 `/admin=1` 走 MFT 直读。
+- WizTree 导出完进程会自动退出，不需要常驻；同时开 GUI 也不影响 CLI（各自独立进程）。
+- 注意 WizTree 免费版仅供个人使用，商用需授权。
 
 ### 跨盘移动大目录的正确方式
 

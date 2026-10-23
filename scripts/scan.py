@@ -14,7 +14,8 @@ Output shape (same on both OSes):
   "system": {os, build, arch, user, home, filesystem,
              disk_total, disk_used, disk_free, purgeable,
              disks: [{name, total, used, free}]},   # all volumes/drives
-  "groups": { "<group>": [{name, path, size_kb, size_h}], ... }
+  "groups": { "<group>": [{name, path, size_kb, size_h}], ... },
+  "coverage": {method, drives, files_scanned, es_path, wiztree_path, ...}
 }
 """
 import json
@@ -22,6 +23,7 @@ import os
 import shutil
 import sys
 import time
+import csv
 
 HOME = os.path.expanduser("~")
 
@@ -159,9 +161,11 @@ def scan_macos():
 #   1. Everything (es.exe) 优先 —— 秒级导出全盘清单，多维聚合基于同一份 CSV，
 #      零重复扫描；这是"全盘覆盖 + 反复多维度分析"的首选（实测 350 万文件
 #      导出 5-6 秒/盘，聚合约 1 分钟/盘）。
-#   2. 回退 os.scandir 全盘遍历 —— 无 Everything 时保证"全盘覆盖"而非固定目标列表。
+#   2. WizTree (wiztree64.exe) 次选 —— 读取 MFT 导出文件清单，速度接近
+#      Everything，且不需要常驻服务；没有 Everything 时的最佳替代。
+#   3. 回退 os.scandir 全盘遍历 —— 两个工具都不可用时保证"全盘覆盖"而非固定目标列表。
+# 三者输出都归一成 '"路径",大小' 两列 CSV，后续聚合完全一致。
 # 所有聚合输出统一为 groups: {name,path,size_kb,size_h}，与 macOS 输出一致。
-# 本部分为本机实测可用（Everything 后端）。
 # ======================================================================
 import re as _re
 import string
@@ -206,6 +210,114 @@ def es_export_csv(es, drive, out_csv, timeout=1200):
         return r.returncode == 0 and os.path.exists(out_csv) and os.path.getsize(out_csv) > 0
     except Exception:
         return False
+
+
+# ---- WizTree 探测（Everything 之外的第二数据源）----
+WIZTREE_CANDIDATES = [
+    "wiztree64.exe",  # PATH
+    r"C:\Program Files\WizTree\WizTree64.exe",
+    r"C:\Program Files (x86)\WizTree\WizTree64.exe",
+    r"D:\WizTree\WizTree64.exe",
+    r"D:\Program Files\WizTree\WizTree64.exe",
+]
+WIZTREE_ENV = "STORAGE_ANALYZER_WIZTREE"
+
+
+def find_wiztree():
+    env = os.environ.get(WIZTREE_ENV, "")
+    if env and os.path.isfile(env):
+        return env
+    la = os.environ.get("LOCALAPPDATA", "")
+    cands = list(WIZTREE_CANDIDATES)
+    if la:
+        cands.append(os.path.join(la, "WizTree", "WizTree64.exe"))
+        cands.append(os.path.join(la, "Programs", "WizTree", "WizTree64.exe"))
+    for c in cands:
+        if os.path.sep in c:
+            if os.path.isfile(c):
+                return c
+        else:
+            p = shutil.which(c)
+            if p:
+                return p
+    return None
+
+
+def normalize_wiztree_csv(src, dst):
+    """WizTree CSV -> 本项目统一的 '"路径",大小' 两列 CSV。
+
+    WizTree 格式：File Name, Size, Allocated, Modified, Attributes, Files, Folders
+    目录行的 Name 以反斜杠结尾且 Size 是子树总量，必须跳过，否则重复计数。
+    使用 Size（逻辑大小）而非 Allocated，避免硬链接的 0 前缀干扰。
+    """
+    ok = False
+    try:
+        with open(src, encoding="utf-8-sig", errors="replace", newline="") as f, \
+                open(dst, "w", encoding="utf-8", newline="") as out:
+            rd = csv.reader(f)
+            header = next(rd, None)
+            if not header:
+                return False
+            hdr = [h.strip().lower() for h in header]
+            try:
+                i_name = hdr.index("file name")
+                i_size = hdr.index("size")
+            except ValueError:
+                # 没有表头时按前两列处理
+                i_name, i_size = 0, 1
+                rd = iter([header] + list(rd))
+            for row in rd:
+                if len(row) <= max(i_name, i_size):
+                    continue
+                name = row[i_name]
+                if not name or name.endswith("\\") or name.endswith("/"):
+                    continue
+                raw = row[i_size].replace(",", "").strip()
+                try:
+                    sz = int(float(raw))
+                except ValueError:
+                    continue
+                if sz < 0:
+                    continue
+                out.write('"%s",%d\n' % (name, sz))
+                ok = True
+    except OSError:
+        return False
+    return ok and os.path.exists(dst) and os.path.getsize(dst) > 0
+
+
+def wiztree_export_csv(exe, drive, out_csv, timeout=1200):
+    """WizTree 命令行导出（仅文件行，避免目录行重复计数）。
+
+    /admin=0 不再弹 UAC；以管理员身份运行本脚本时可改 /admin=1，走 MFT 直读。
+    导出的是 WizTree 原生格式，随后转成本项目统一 CSV。
+    """
+    raw = out_csv + ".wiz"
+    args = [exe, drive, "/export=" + raw,
+            "/exportfolders=0", "/exportfiles=1", "/admin=0"]
+    try:
+        _sp.run(args, capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return False
+    if not os.path.exists(raw) or os.path.getsize(raw) == 0:
+        return False
+    try:
+        ok = normalize_wiztree_csv(raw, out_csv)
+    finally:
+        try:
+            os.remove(raw)
+        except OSError:
+            pass
+    return ok
+
+
+# auto 的尝试顺序；显式指定 --source 时只试该数据源，失败即跳过该盘（便于基准测试）
+SOURCE_CHAIN = {
+    "auto": ("everything", "wiztree", "walk"),
+    "everything": ("everything",),
+    "wiztree": ("wiztree",),
+    "walk": ("walk",),
+}
 
 
 # ---- 行流解析与清洗 ----
@@ -461,7 +573,9 @@ def running_apps(limit=50):
 
 
 def scan_windows(opts):
-    es = find_es() if not opts.get("no_everything") else None
+    source = opts.get("source", "auto")
+    es = find_es() if source in ("auto", "everything") else None
+    wz = find_wiztree() if source in ("auto", "wiztree") else None
     drives = opts.get("drives") or [d["name"] for d in list_drives_windows()]
     tmpdir = opts.get("tmpdir") or _tf.gettempdir()
     min_dir_mb = int(opts.get("min_dir_mb", 10))
@@ -472,34 +586,54 @@ def scan_windows(opts):
     top = int(opts.get("top", 80))
 
     groups = {}
-    coverage = {"method": "everything" if es else "walk", "es_path": es,
-                "drives": drives, "files_scanned": 0}
-    used_walk = False
+    coverage = {"method": "none", "source_requested": source,
+                "es_path": es, "wiztree_path": wz, "drives": drives,
+                "files_scanned": 0, "reused_csv": []}
+    used = set()
+    reused_drives = []
     for drive in drives:
         csv_path = os.path.join(tmpdir, "scan_%s.csv" % drive[0])
-        reused = False
         if opts.get("reuse_csv") and os.path.exists(csv_path) \
                 and os.path.getsize(csv_path) > 0:
-            reused = True  # 复用上次 es 导出的清单，跳过重复导出
-        elif es:
-            ok = es_export_csv(es, drive, csv_path)
-            if not ok:
-                # ES 存在但 Everything 没运行时，es.exe 会报 Error 8（IPC window not found）。
-                # 这种情况必须回退全盘遍历，否则该盘直接空结果。
-                print("Everything 导出失败（常见原因：Everything 未启动），%s 盘回退全盘遍历，耗时较长"
-                      % drive, file=sys.stderr)
-                used_walk = True
-                if not walk_export_csv(drive, csv_path):
-                    continue
+            reused_drives.append(csv_path)  # 复用上次导出的清单，跳过重复导出
+            print("reused existing csv: %s" % csv_path, file=sys.stderr)
         else:
-            used_walk = True
-            if not walk_export_csv(drive, csv_path):
+            picked = None
+            for src in SOURCE_CHAIN[source]:
+                if src == "everything":
+                    if not es:
+                        if source == "everything":
+                            print("未找到 es.exe：请安装 Everything，或设置 PATH", file=sys.stderr)
+                        continue
+                    if es_export_csv(es, drive, csv_path):
+                        picked = "everything"
+                        break
+                    # ES 存在但 Everything 没运行时，es.exe 会报 Error 8（IPC window not found）
+                    print("Everything 导出失败（常见原因：Everything 未启动），%s 盘" % drive,
+                          file=sys.stderr)
+                elif src == "wiztree":
+                    if not wz:
+                        if source == "wiztree":
+                            print("未找到 WizTree（wiztree64.exe）：请安装 WizTree，"
+                                  "或设置环境变量 %s 指向 exe" % WIZTREE_ENV, file=sys.stderr)
+                        continue
+                    if wiztree_export_csv(wz, drive, csv_path):
+                        picked = "wiztree"
+                        break
+                    print("WizTree 导出失败，%s 盘" % drive, file=sys.stderr)
+                else:
+                    print("%s 盘回退全盘遍历（无可用索引工具），耗时较长" % drive,
+                          file=sys.stderr)
+                    if walk_export_csv(drive, csv_path):
+                        picked = "walk"
+                        break
+            if not picked:
+                print("%s 盘所有数据源均失败，跳过该盘" % drive, file=sys.stderr)
                 continue
+            used.add(picked)
         res = combined_pass(csv_path, drive, min_dir_mb=min_dir_mb, big_mb=big_mb,
                             cache_mb=cache_mb, updater_mb=updater_mb,
                             ver_mb=ver_mb, top=top)
-        if reused:
-            print("reused existing csv: %s" % csv_path, file=sys.stderr)
         coverage["files_scanned"] += res["count"]
         g = groups.setdefault("drive_" + drive[0], {})
         g["root_depth2"] = res["dir2"]
@@ -510,8 +644,10 @@ def scan_windows(opts):
         g["updater_dirs"] = res["updater_dirs"]
         g["version_dirs"] = res["version_dirs"]
 
-    if used_walk:
-        coverage["method"] = "everything+walk" if es else "walk"
+    coverage["reused_csv"] = reused_drives
+    coverage["method"] = "+".join(
+        s for s in ("everything", "wiztree", "walk") if s in used) \
+        or ("reused" if reused_drives else "none")
 
     # 回收站（各盘）：合并大小
     recycle_items = []
@@ -573,6 +709,9 @@ def main():
         data = {
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "system": system, "groups": groups, "_hierarchy": hierarchy,
+            "coverage": {"method": "du", "drives": ["/"],
+                         "files_scanned": None,
+                         "note": "macOS 用 du 统计目标目录，非全盘文件清单"},
             "scan_seconds": round(time.time() - started, 1),
         }
         print(json.dumps(data, ensure_ascii=False, indent=2))
@@ -583,12 +722,18 @@ def main():
                          ensure_ascii=False))
         return
 
-    # Windows CLI：scan.py [--drives C,D] [--no-everything] [--min-dir 10]
-    #              [--big 100] [--cache 30] [--updater 30] [--ver 50] [--top 80] [--out FILE]
+    # Windows CLI：scan.py [--drives C,D] [--source auto|everything|wiztree|walk]
+    #              [--min-dir 10] [--big 100] [--cache 30] [--updater 30]
+    #              [--ver 50] [--top 80] [--out FILE]
     import argparse
-    ap = argparse.ArgumentParser(description="Read-only Windows storage scanner (Everything-first)")
+    ap = argparse.ArgumentParser(
+        description="Read-only Windows storage scanner (Everything / WizTree / walk)")
     ap.add_argument("--drives", default="", help="comma list e.g. C,D (default: all fixed drives)")
-    ap.add_argument("--no-everything", action="store_true", help="force os.scandir walk backend")
+    ap.add_argument("--source", choices=("auto", "everything", "wiztree", "walk"),
+                    default="auto",
+                    help="data source; auto = Everything -> WizTree -> walk")
+    ap.add_argument("--no-everything", action="store_true",
+                    help="等同于 --source walk（保留兼容）")
     ap.add_argument("--reuse-csv", action="store_true", dest="reuse_csv",
                     help="reuse existing scan_<drive>.csv in temp dir instead of re-exporting")
     ap.add_argument("--min-dir", type=int, default=10, dest="min_dir_mb")
@@ -599,7 +744,8 @@ def main():
     ap.add_argument("--top", type=int, default=80)
     ap.add_argument("--out", default="", help="write JSON to file instead of stdout")
     args = ap.parse_args()
-    opts = {"no_everything": args.no_everything, "min_dir_mb": args.min_dir_mb,
+    opts = {"source": "walk" if args.no_everything else args.source,
+            "min_dir_mb": args.min_dir_mb,
             "big_mb": args.big_mb, "cache_mb": args.cache_mb,
             "updater_mb": args.updater_mb, "ver_mb": args.ver_mb,
             "top": args.top, "tmpdir": None, "reuse_csv": args.reuse_csv}
