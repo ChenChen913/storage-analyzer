@@ -9,7 +9,6 @@
 - 腾讯视频（QQLive）
 - 包管理器缓存
 - 应用更新器残留
-- 实测释放大小参考
 
 分析时，对每个 🟢 候选项目必须用 `drilldown.py` 深入到子目录级别，判断哪些是纯缓存（可删）、哪些包含用户数据（不可删）。
 
@@ -124,36 +123,9 @@ Chrome、微信等运行时会将部分文件锁定（`mmap`、`db` 文件）。
 
 路径：`%LOCALAPPDATA%\*-updater\`
 
-内部通常是 `pending\` + `installer.exe`（更新包 + 安装器），全部可删。常见：
-- `@phoenixdesktop-updater`
-- `@genieworkbuddy-updater`
-- `@zcodedesktop-updater`
-- `typeless-updater`
-- `AutoGLM-updater`
-- `doc2x-updater`
-- `apifox-updater`
-- `taobao-updater`
-- `quark-cloud-drive-updater`
-- `xyz.chatboxapp.app-updater`
+内部通常是 `pending\` + `installer.exe`（更新包 + 安装器），全部可删。常见命名形态：
+- `@<app>-updater`（作用域式，多为 Electron 应用）
+- `<app>-updater`
+- `<vendor>.<app>.app-updater`（反向域名式）
 
----
-
-## 各类缓存清理的实际大小参考（实测）
-
-基于本机 2026-06-27 清理前后的实际数据：
-
-| 项目 | 实际释放 |
-|------|---------|
-| Edge Service Worker | ~2.7 GB |
-| Edge Cache + Code Cache + 其他 | ~0.65 GB |
-| npm-cache | ~1.3 GB |
-| WinGet Packages | ~1.5 GB |
-| Bun install cache | ~1.2 GB |
-| Cargo registry | ~1.1 GB |
-| 10 个更新器残留 | ~2.8 GB |
-| 微信 log + radium 缓存 | ~0.44 GB |
-| QQLive | ~0.88 GB |
-| pip + uv | ~0.32 GB |
-| **合计** | **~11.8 GB** |
-
-C 盘使用率从 88.2% 降到 82.2%。
+判定方法：目录里只有 `pending\`、安装器或 `*.nupkg` 一类更新包时属纯缓存；若含用户配置、数据库或登录态，降级为黄灯。

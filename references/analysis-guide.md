@@ -16,9 +16,9 @@
 
 来自 2026-08-21 四轮实战教训（详见 [lessons-learned-windows.md](lessons-learned-windows.md) 第 6 节）：
 
-1. **建全量目录树**：用 Everything CSV 在内存中构建完整目录树并**无阈值逐层展开**（≥15MB 节点全部打印），禁止只依赖 scan.py 的聚合 TopN——它连续三轮漏掉了用户目录下约 8GB 的 AI 工具点目录。对每个陌生目录下钻验尸到能解释每个字节。
+1. **建全量目录树**：用 Everything CSV 在内存中构建完整目录树并**无阈值逐层展开**（≥15MB 节点全部打印），禁止只依赖 scan.py 的聚合 TopN——它曾连续三轮漏掉用户目录下多个 AI 工具点目录（合计数 GB）。对每个陌生目录下钻验尸到能解释每个字节。
 2. **总账核对**：Everything 总量 vs `shutil.disk_usage` 实占 vs 目录树加总，三方必须对平；差额要能解释（硬链接/NTFS 压缩/MFT），解释不了就是漏项。
-3. **目录定性先看内容**：禁止凭目录名推断用途（实锤：TRAE SOLO 实为 Trae CN 数据、recordings 是用户录音不是模型、XiuXiu 缓存在 QtWebEngine 子目录）。`recordings/photos/docs` 默认视为用户数据进黄灯。
+3. **目录定性先看内容**：禁止凭目录名推断用途（实锤：某以产品名命名的目录其实是另一品牌的数据、`recordings` 是用户录音不是模型、某应用的缓存藏在子目录而非同名 `Cache`）。`recordings/photos/docs` 默认视为用户数据进黄灯。
 4. **清理成套**：浏览器缓存六件套 = Cache + Code Cache + GPUCache + Service Worker + Shared Dictionary + DawnCache，漏一个就是下一轮的“新发现”。
 5. **清理后必须重新导出 CSV 复扫**，逐项确认真的没了。
 6. **登录态逐文件快照核对**：删前后对比 `Network\Cookies` / `Login Data` / `Web Data` / `Bookmarks` 的存在与大小。
@@ -73,7 +73,7 @@
 
 **典型案例（Edge Default profile）：**
 
-- ✅ 可删：`Service Worker\`（2.7 GB）、`Cache\`、`Code Cache\`、`GPUCache\`、`Shared Dictionary\`
+- ✅ 可删：`Service Worker\`（可达数 GB）、`Cache\`、`Code Cache\`、`GPUCache\`、`Shared Dictionary\`
 - ❌ 不可删：`Extensions\`、`History`、`Cookies`、`Preferences`、`Local Storage\`、`Bookmarks`、`Login Data`
 
 **典型案例（微信 xwechat）：**
@@ -83,7 +83,7 @@
 
 ## 清理后复扫与前后对比
 
-清理完绿灯项后，重跑 `scan.py` 生成对比报告。扫描时间缩短是侧面印证信号（本次：46s → 38s，减少约 8s）。对比两次 `disk_used` 差值即实际释放量，比手动估准。
+清理完绿灯项后，重跑 `scan.py` 生成对比报告。扫描时间缩短是侧面印证信号（例如从数十秒降到三十秒左右）。对比两次 `disk_used` 差值即实际释放量，比手动估准。
 
 **前后对比脚本**——逐个 group 找出删除/缩小的目录，生成清晰的 before/after 表格：
 

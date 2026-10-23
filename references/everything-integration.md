@@ -5,7 +5,7 @@
 
 ## 1. 为什么用索引工具
 
-- 索引常驻或直读 MFT，查询毫秒级；全盘文件清单导出 5-6 秒/盘（350 万文件）。
+- 索引常驻或直读 MFT，查询毫秒级；全盘文件清单导出秒级/盘（百万级文件）。
 - 纯 Python os.walk 全盘遍历同样数据需要 30-90 分钟，且每次重扫。
 - 局限：只索引 NTFS 及已配置目录；索引大小与实际占用有偏差（见 lessons-learned 1.3）；Everything 依赖主程序常驻，WizTree 每次导出都要重新读 MFT。
 
@@ -48,7 +48,7 @@ WizTree64.exe "C:\" /export="C:\tmp\wiz.csv" /exportfolders=0 /exportfiles=1 /ad
 ```
 
 - `/exportfolders=0 /exportfiles=1`：只导文件行。目录行 Name 以 `\` 结尾且 Size 是子树总量，混入会导致重复计数。
-- `/admin=0`：不请求提权、不弹 UAC，但读不到 WindowsApps 等受保护目录。同机 C 盘实测普通权限少 5 万文件、18.7 GB。
+- `/admin=0`：不请求提权、不弹 UAC，但读不到 WindowsApps 等受保护目录。同机实测普通权限会漏掉约一成逻辑总量。
 - `/admin=1`：需要当前进程已提权，走 MFT 直读，速度快且覆盖完整。scan.py 用 `--wiztree-admin` 开启，必须先在提权终端里运行。
 - 导出格式（带表头）：`File Name, Size, Allocated, Modified, Attributes, Files, Folders`。
   统一用 `Size`（逻辑大小）；`Allocated` 对硬链接文件带前导 0 标记，口径与 Everything 不一致。

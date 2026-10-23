@@ -2,7 +2,7 @@
 
 ## 场景
 
-C 盘 200 GB 仅剩 16.9 GB（91.5%），经三轮清理释放 11.9 GB。第三轮涉及将 Hermes Agent 自身的 `node_modules`（1.3 GB）和 `.git`（403 MB）从 C 盘迁移到 D 盘。
+系统盘空间紧张，经三轮清理释放十余 GB。第三轮涉及将一个 Agent 工具自身的 `node_modules` 和 `.git` 从系统盘迁移到数据盘。
 
 ## 关键技术：Windows 目录联接（Junction）
 
@@ -16,7 +16,7 @@ mklink /J "C:\原路径\目录名" "D:\新位置\目录名"
 
 ### 适用场景
 
-- 应用不支持自定义数据路径（如微信 xwechat 的 `radium` 浏览器引擎固定在 `%APPDATA%`）
+- 应用不支持自定义数据路径（如某些聊天应用的浏览器引擎固定在 `%APPDATA%`）
 - npm `node_modules` / Git `.git` / IDE 扩展目录等大体积依赖
 - 不想重装应用、不想改环境变量的情况
 
@@ -54,29 +54,29 @@ robocopy "C:\source" "D:\dest" /E /MOVE /R:2 /W:3
 ### Step 1：确认目标路径
 
 ```bash
-ls -d "/d/hermes_data/"  # 确认 D 盘目标目录存在
+ls -d "/d/新位置/"  # 确认数据盘目标目录存在
 ```
 
 ### Step 2：robocopy 搬迁
 
 ```cmd
-robocopy "C:\Users\<user>\AppData\Local\hermes\hermes-agent\node_modules" "D:\hermes_data\hermes-agent\node_modules" /E /MOVE /R:2 /W:3
+robocopy "C:\原路径\目录名" "D:\新位置\目录名" /E /MOVE /R:2 /W:3
 ```
 
 ### Step 3：创建联接
 
 ```cmd
-mklink /J "C:\Users\<user>\AppData\Local\hermes\hermes-agent\node_modules" "D:\hermes_data\hermes-agent\node_modules"
+mklink /J "C:\原路径\目录名" "D:\新位置\目录名"
 ```
 
 ### Step 4：验证
 
 ```bash
 # 确认原路径可访问
-ls "/c/Users/<user>/AppData/Local/hermes/hermes-agent/node_modules/electron/package.json"
+ls "/c/原路径/目录名/关键文件"
 
 # 确认功能正常
-cd "/c/Users/<user>/AppData/Local/hermes/hermes-agent" && git status
+cd "/c/原路径" && git status
 ```
 
 ## 验证清单
@@ -84,8 +84,8 @@ cd "/c/Users/<user>/AppData/Local/hermes/hermes-agent" && git status
 搬迁后逐一检查：
 - [ ] Git 操作正常（`git status`、`git log`）
 - [ ] npm/node 能读取模块（`ls node_modules/<key-package>`）
-- [ ] 应用本身运行正常（如 Hermes 对话未中断）
-- [ ] C 盘释放了对应空间（`df -h` 对比）
+- [ ] 应用本身运行正常（如 Agent 会话未中断）
+- [ ] 系统盘释放了对应空间（`df -h` 对比）
 
 ## 踩过的坑
 

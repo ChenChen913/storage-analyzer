@@ -22,37 +22,35 @@ python drilldown.py "D:/" --min-mb 100 --limit 30
 
 ### 2. 深入可疑目录
 
-对 Top N 中的大目录（如 DailySoft 38 GB、claudecode 23 GB）如需进一步了解内部结构：
+对 Top N 中的大目录如需进一步了解内部结构：
 
 ```bash
-python drilldown.py "D:/DailySoft" --min-mb 200 --limit 15
+python drilldown.py "D:/示例目录" --min-mb 200 --limit 15
 ```
 
 ### 3. 不要做的事
 
-- ❌ **不要写全量递归脚本**——对 220 GB 的 D 盘用 `os.walk` 逐个顶级目录递归必然超时（实测 180s+）
+- ❌ **不要写全量递归脚本**——对大容量非系统盘用 `os.walk` 逐个顶级目录递归必然超时（实测 180s+）
 - ❌ **不要试图算出"所有文件总和"**——drilldown 顶层数据 + disks 信息够用
 - ✅ **多盘数据统一进 analysis JSON**——top5 和三级分类都包含 D 盘项，disk_name/total 写清楚
 
 ## 报告中的呈现
 
 - `system.disks` 保留所有盘信息，报告自动渲染多盘进度条
-- top5 包含跨盘的大项（如 "DailySoft（D 盘）"）
+- top5 包含跨盘的大项（如「示例目录（D 盘）」）
 - 🟡 项中 D 盘目录给 `open_note` 提示用户在资源管理器打开 → 自己判断
 - D 盘的 pagefile.sys 放 🔴 或归蓝色（系统管理），不标 🟢
 
-## 本会话实际案例（2026-07-15）
+## 案例结构（示意）
 
 ```
-D: 274.7 GB 总容量，已用 220.2 GB（80.2%）
-Top 项目：
-  DailySoft       38.4 GB — 日常软件和数据
-  it              27.3 GB — IT 项目
-  claudecode      22.8 GB — Claude Code 项目
-  course          15.7 GB — 课程视频
-  pagefile.sys    11.0 GB — 虚拟内存（系统管理）
-  aiproject       10.0 GB — AI 项目
-  电影              7.6 GB — 电影文件
+D: 总容量与已用量取自 system.disks
+Top 项目（示意）：
+  应用数据目录      数十 GB   — 日常软件和数据
+  项目目录          二十余 GB — 代码仓库
+  媒体目录          十余 GB   — 课程/视频文件
+  虚拟内存文件      十余 GB   — 系统管理
+  其他项目目录      十 GB 级  — 工作项目
 ```
 
 除 pagefile.sys 外，所有 D 盘项目都归 🟡（需人工判断），不给自动删除按钮。

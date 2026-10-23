@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """orphan.py —— 卸载残留检测器（storage-analyzer v3 核心组件）
 
-解决的问题：应用卸载后数据目录无人认领。实战教训：Kiro 卸载 90 天后其 720MB
-数据目录才在第六轮被发现；Codex 四处分布 1.7GB 由用户口述才清除。
+解决的问题：应用卸载后数据目录无人认领。实战教训：某编辑器卸载 90 天后其数百 MB
+数据目录才在第六轮被发现；另一个 AI 工具四处分布数 GB，由用户口述才清除。
 
 机制：枚举用户侧数据目录（%APPDATA% / %LOCALAPPDATA% / ~ 点目录），对照五处
 安装证据（Programs / Program Files / WindowsApps 包仓库 / 开始菜单 / 卸载注册表）

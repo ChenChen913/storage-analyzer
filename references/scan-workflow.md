@@ -34,11 +34,11 @@ Windows 上 `scan.py` 采用数据源插件化，按 `--source` 顺序尝试。�
 
 ### Everything（首选）
 
-自动探测 `es.exe`（`D:\Everything\es.exe`、`C:\Everything\es.exe`、Program Files、PATH），探测到即导出全盘文件清单（实测 350 万文件 5-6 秒/盘）。单次遍历同时产出：目录聚合(2/3 层)、大文件 TopN、安装包、缓存目录、更新器目录、多版本目录。实测整盘分析约 18 秒。
+自动探测 `es.exe`（`<安装目录>\Everything\es.exe`、Program Files、PATH），探测到即导出全盘文件清单（实测百万级文件秒级/盘）。单次遍历同时产出：目录聚合(2/3 层)、大文件 TopN、安装包、缓存目录、更新器目录、多版本目录。实测整盘分析约十几秒。
 
 ### WizTree（次选）
 
-自动探测 `wiztree64.exe`（Program Files、PATH、`%LOCALAPPDATA%`），命令行读盘导出文件清单，不需要常驻服务。便携版用 `STORAGE_ANALYZER_WIZTREE=<exe 绝对路径>` 指定。默认 `/admin=0` 不弹 UAC，但普通权限会漏掉 WindowsApps、Defender 定义等受保护目录（同机实测 C 盘少 18.7 GB、5 万文件）；需要完整覆盖时在已提权终端加 `--wiztree-admin`。
+自动探测 `wiztree64.exe`（Program Files、PATH、`%LOCALAPPDATA%`），命令行读盘导出文件清单，不需要常驻服务。便携版用 `STORAGE_ANALYZER_WIZTREE=<exe 绝对路径>` 指定。默认 `/admin=0` 不弹 UAC，但普通权限会漏掉 WindowsApps、Defender 定义等受保护目录（同机实测约一成逻辑总量）；需要完整覆盖时在已提权终端加 `--wiztree-admin`。
 
 ### walk（兜底）
 
@@ -48,7 +48,7 @@ Windows 上 `scan.py` 采用数据源插件化，按 `--source` 顺序尝试。�
 
 - **已装 Everything 或 WizTree：直接用已装的那个。** `--source auto` 会自动优先 Everything、其次 WizTree。
 - **只装了 WizTree：** 可以直接用，但普通权限有覆盖缺口，报告里要注明；需要精确统计时在提权终端加 `--wiztree-admin` 重扫。
-- **两个都没装：推荐先装 Everything。** 免费、普通权限就能全盘覆盖、重复扫描秒级（同机 C 盘 15.5s，WizTree 81s），代价是索引常驻约 400MB 内存。
+- **两个都没装：推荐先装 Everything。** 免费、普通权限就能全盘覆盖、重复扫描秒级（同机端到端 Everything 十几秒，WizTree 一分多钟），代价是索引常驻数百 MB 内存。
 - **两个都没有又暂时不装：** 自动回退 walk，百万文件级要几十分钟，只适合应急。
 
 `--source auto` 默认按 Everything → WizTree → walk 降级；也可 `--source everything|wiztree|walk` 强制指定（便于排查和基准测试，指定源失败则跳过该盘）。
@@ -101,7 +101,7 @@ macOS 单盘（/），`du` 速度快，但多卷（外置盘等）同理并行�
 
 输出 JSON 结构：`system` + `groups` + `coverage` + `temp_artifacts` + `_hierarchy`。读不到的目录标 `denied`，需在报告里列出并提示遗漏体量。
 
-- **Windows 扫描耗时**：Everything 后端约 18 秒/盘；WizTree 读数秒级到分钟级（视缓存与权限）；无索引工具时 walk 回退数分钟到数十分钟（百万文件级）。先告知用户预计时间。
+- **Windows 扫描耗时**：Everything 后端约十几秒/盘；WizTree 读数秒级到分钟级（视缓存与权限）；无索引工具时 walk 回退数分钟到数十分钟（百万文件级）。先告知用户预计时间。
 
 > **回收站扫描需要管理员权限。**
 
@@ -109,7 +109,7 @@ macOS 单盘（/），`du` 速度快，但多卷（外置盘等）同理并行�
 
 - Everything 索引常驻，扫描成本约等于 0；无 Everything 时用多进程按盘根分片（SSD 近线性）+ `os.scandir` + 先粗后细。
 - 子 Agent 建议用于“多维度并行分析”而非 IO 扫描（瓶颈在磁盘）。
-- **所有 drilldown 并行批处理（每批 6 个）**：不要逐条 drill——把 10-20 个目标目录一次 6 个批量发出，每轮等待最慢的那个，3-4 轮搞定。实测从逐条约 120s 降到约 40s。
+- **所有 drilldown 并行批处理（每批 6 个）**：不要逐条 drill——把 10-20 个目标目录一次 6 个批量发出，每轮等待最慢的那个，3-4 轮搞定。实测耗时降到逐条串行的三分之一左右。
 
 ## git-bash 后台执行与 execute_code
 
@@ -135,7 +135,7 @@ with open("C:/Users/.../Temp/storage_scan.json", "w", encoding="utf-8") as f:
     f.write(result.stdout)
 ```
 
-实测 C 盘 scan.py 52 秒完成（25KB JSON），D 盘 drilldown.py 112 秒完成。回退策略：后台 terminal 跑 60 秒仍为 0 字节，就 kill 并切到 execute_code。
+实测系统盘 `scan.py` 一分钟内完成，非系统盘 `drilldown.py` 一两分钟。回退策略：后台 terminal 跑 60 秒仍为 0 字节，就 kill 并切到 execute_code。
 
 **路径与编码补充：**
 
@@ -144,8 +144,8 @@ with open("C:/Users/.../Temp/storage_scan.json", "w", encoding="utf-8") as f:
 
 ## 扫描阶段常见故障
 
-- **`es.exe` 报 `Error 8: IPC window not found`**：Everything 主程序没在跑。用 `subprocess.Popen([r"D:\Everything\Everything.exe", "-startup"], creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP, cwd=r"D:\Everything", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)` 启动，等 5-10 秒索引加载后用 `es -get-result-count` 验证。
+- **`es.exe` 报 `Error 8: IPC window not found`**：Everything 主程序没在跑。用 `subprocess.Popen([r"<安装目录>\Everything.exe", "-startup"], creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP, cwd=r"<安装目录>", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)` 启动，等 5-10 秒索引加载后用 `es -get-result-count` 验证。
 - **C 盘百万文件 scan.py 超前台超时**：先让 es 单独 `-export-csv`，再 `scan.py --reuse-csv` 跳过导出阶段；或后台跑完。
-- **Everything 溢出值**：微信 `xwechat_files\...\migrate\config\*` 等文件可能被报成 `18446744073709551615`（2^64-1）字节。CSV 聚合时把 >4TB 的值视为无效置 0，否则总量会算出天文数字。
-- **junction 幻增**：`dir_size_bytes` 跟随 NTFS junction 会循环虚增（pnpm 曾报 62.5GB，真实 1.4GB）。Windows junction 对 `Path.is_symlink()` 返回 False，必须用 `st.st_file_attributes & 0x400 (REPARSE_POINT)` 判断；Everything CSV 聚合不受影响。
+- **Everything 溢出值**：某些同步盘/聊天应用的数据文件可能被报成 `18446744073709551615`（2^64-1）字节。CSV 聚合时把 >4TB 的值视为无效置 0，否则总量会算出天文数字。
+- **junction 幻增**：`dir_size_bytes` 跟随 NTFS junction 会循环虚增（包管理器 store 曾报数十 GB，真实只有 1 GB 余）。Windows junction 对 `Path.is_symlink()` 返回 False，必须用 `st.st_file_attributes & 0x400 (REPARSE_POINT)` 判断；Everything CSV 聚合不受影响。
 - **WizTree 导出**：CLI 参数、CSV 表头与权限差异见 [everything-integration.md](everything-integration.md)。

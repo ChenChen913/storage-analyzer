@@ -20,7 +20,7 @@ Windows 通常多个盘（C:、D:…）。磁盘总览会列出所有盘，但**
 | `C:\Program Files`、`Program Files (x86)` | 应用本体 | 🔴 仅重复/想卸时上灯，否则归蓝色 |
 | `%USERPROFILE%\Downloads` 的安装包 | exe/msi 残留 | 🟢 |
 | `C:\\$Recycle.Bin` | 回收站 | 🟡 提示用户清空 |
-| `%APPDATA%\\Tencent\\xwechat` | 微信应用数据（浏览器引擎 radium + 系统插件 xplugin + 日志），**不是用户收发文件**（文件通常在 D 盘或用户指定路径） | radium 浏览器缓存 🟢 / xplugin 核心组件 ❌不能动 / log 🟢 |
+| `%APPDATA%\\Tencent\\xwechat` | 微信应用数据（浏览器引擎 radium + 系统插件 xplugin + 日志），**不是用户收发文件**（文件通常在用户指定的其他盘） | radium 浏览器缓存 🟢 / xplugin 核心组件 ❌不能动 / log 🟢 |
 | `%APPDATA%\\Tencent\\QQLive` | 腾讯视频缓存 | 🟢 纯缓存 |
 | `%APPDATA%\\Tencent\\WeMeet` | 腾讯会议缓存/记录 | 🟡 含会议数据 |
 | `%APPDATA%\\Tencent\\Yuanbao` | 元宝 AI 助手 | 🟡 |

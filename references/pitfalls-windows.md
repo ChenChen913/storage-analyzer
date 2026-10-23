@@ -35,15 +35,15 @@ python drilldown.py "D:/" --min-mb 100     # ✅
 **错误做法：**
 
 ```bash
-rd /s /q "C:\Users\11853\.cache"          # ❌ rd: command not found
+rd /s /q "C:\Users\<user>\.cache"          # ❌ rd: command not found
 cmd //c "rd /s /q \"C:\path\with\space\"" # ❌ 引号转义容易出错（乱码报错）
 ```
 
 **正确做法（MSYS 路径 + rm -rf）：**
 
 ```bash
-rm -rf "/c/Users/11853/.cache"
-rm -rf "/c/Users/11853/AppData/Local/Google/Chrome for Testing"  # 含空格也能用
+rm -rf "/c/Users/<user>/.cache"
+rm -rf "/c/Users/<user>/AppData/Local/Google/Chrome for Testing"  # 含空格也能用
 ```
 
 - 路径用 MSYS 风格：`/c/` 代替 `C:\`，正斜杠
@@ -54,7 +54,7 @@ rm -rf "/c/Users/11853/AppData/Local/Google/Chrome for Testing"  # 含空格也�
 
 ### 非系统盘全量递归扫描容易超时（>180s）
 
-大容量非系统盘（如 D 盘 200 GB+，百万级文件）用 `os.walk` 对每个子目录递归计大小极易超时。正确做法：
+大容量非系统盘（如 200 GB+，百万级文件）用 `os.walk` 对每个子目录递归计大小极易超时。正确做法：
 
 1. 用 `drilldown.py "D:/" --min-mb 100 --limit 30` 做顶层分析（只遍历一层，速度快）
 2. 对关心的子目录再用 `drilldown.py` 深入一层
@@ -64,7 +64,7 @@ rm -rf "/c/Users/11853/AppData/Local/Google/Chrome for Testing"  # 含空格也�
 
 ### `du` 在深目录树上超时
 
-Windows git-bash 的 `du -sm` 遍历百万文件级目录（如 `node_modules`、`xwechat` 整树）时经常超时（30s+ 无输出）。不要对整棵大树跑 du。
+Windows git-bash 的 `du -sm` 遍历百万文件级目录（如 `node_modules`、聊天应用整树）时经常超时（30s+ 无输出）。不要对整棵大树跑 du。
 
 - 用 `drilldown.py` 按一级子目录拆分（限制 `--limit` 和 `--min-mb`）
 - 或写一个轻量 Python `os.walk` 脚本，逐个顶级子目录计算
@@ -136,14 +136,14 @@ cmd /c rmdir /s /q <dir>
 - **可安全删（用户权限即可）**：`C:\ProgramData\NVIDIA Corporation\Downloader` —— ACL 是 `Everyone:(I)(OI)(CI)(F)`，普通权限可写；内容是 GFE 下载的更新安装包 + 下载清单（`gfeupdate.json` / `status.json`），属可再生缓存。**只清内容、保留目录**，并明确告知用户 GFE 需要时会重新下载。
 - **需管理员**：`C:\Program Files\NVIDIA Corporation\Installer2` —— ACL 为 `TrustedInstaller/Administrators` 独占，普通权限实测 `PermissionError`，只能给管理员 `rmdir /s /q` 命令。
 - **绝对不要碰**：`ProgramData\NVIDIA\NGX`（DLSS 模型）、`ProgramData\NVIDIA Corporation\{Drs,NvBackend,ShadowPlay,NvStreamSrv,NvTelemetry,nvtopps,CrashDumps,RX}`、`Program Files\NVIDIA Corporation\*` 下驱动/服务本体、`Windows\System32\DriverStore`。
-- **删前后必做健康验证**：`"C:\Windows\System32\nvidia-smi.exe" --query-gpu=name,driver_version,temperature.gpu,utilization.gpu --format=csv` 前后对比驱动版本必须一致；再 `tasklist | grep -icE "nvcontainer|NVDisplay"` 确认服务进程仍在（本机常态 4 个）。
+- **删前后必做健康验证**：`"C:\Windows\System32\nvidia-smi.exe" --query-gpu=name,driver_version,temperature.gpu,utilization.gpu --format=csv` 前后对比驱动版本必须一致；再 `tasklist | grep -icE "nvcontainer|NVDisplay"` 确认服务进程仍在（数量与清理前一致）。
 - 判断权限别用 bash 里的 `icacls`：MSYS 会把路径参数转换坏。用 `execute_code` + `subprocess.run(["icacls", r"C:\..."])`，或直接做“创建+删除探测文件”的可写性实测。
 
 ## 应用与文件操作
 
 ### 删除 ms-playwright 会破坏 browser 工具
 
-Hermes 的 browser 工具（browser_navigate 等）底层依赖 Playwright，其浏览器二进制存放在 `%LOCALAPPDATA%\ms-playwright\`。如果删了这个目录，browser 工具会报错：
+Agent 的 browser 工具（browser_navigate 等）底层依赖 Playwright，其浏览器二进制存放在 `%LOCALAPPDATA%\ms-playwright\`。如果删了这个目录，browser 工具会报错：
 
 ```
 browserType.launch: Executable doesn't exist at ...\ms-playwright\...
@@ -169,13 +169,13 @@ robocopy "C:\source" "D:\dest" /E /MOVE /R:2 /W:3
 
 ### Ollama（Windows）安装包残留的判定与验证
 
-`D:\ollama\OllamaSetup.exe`、`%LOCALAPPDATA%\Ollama\updates_v2\<hash>\OllamaSetup.exe` 只是安装器；模型在 `OLLAMA_MODELS`（本例 `D:\ollama\models`，就是 embedding 模型 bge-m3 的家），程序在 `D:\ollama\Program`，`db.sqlite` / `*.log` 是应用状态——**绝不能删整个 `%LOCALAPPDATA%\Ollama`**。删前删后都用 `curl -s --noproxy 127.0.0.1 http://127.0.0.1:11434/api/embed -d '{"model":"bge-m3","input":"测试"}'` 比对向量 md5 指纹。
+安装目录下的 `OllamaSetup.exe`、`%LOCALAPPDATA%\Ollama\updates_v2\<hash>\OllamaSetup.exe` 只是安装器；模型在 `OLLAMA_MODELS` 指向的目录，程序在安装目录，`db.sqlite` / `*.log` 是应用状态——**绝不能删整个 `%LOCALAPPDATA%\Ollama`**。删前删后都用 `curl -s --noproxy 127.0.0.1 http://127.0.0.1:11434/api/embed -d '{"model":"bge-m3","input":"测试"}'` 比对向量 md5 指纹。
 
-**⚠️ 跑 `ollama list` 会触发自动升级**：Windows 上 CLI 会拉起 app wrapper，发现有 pending 更新就静默安装（本次 0.34.3 → 0.34.4，安装过程会长时间占用 `D:\ollama\Program`）。要测试请用 `ollama serve` + curl，别用 `ollama list`；若升级已在跑，等 `OllamaSetup.exe` 进程退出再动手。
+**⚠️ 跑 `ollama list` 会触发自动升级**：Windows 上 CLI 会拉起 app wrapper，发现有 pending 更新就静默安装（观察到的实例就是一次小版本自动升级，安装过程会长时间占用安装目录）。要测试请用 `ollama serve` + curl，别用 `ollama list`；若升级已在跑，等 `OllamaSetup.exe` 进程退出再动手。
 
 ## 清理执行阶段的坑
 
-1. **agent 工作区千万别放 `%TEMP%`**：绿灯项里常有 `rm -rf "$TEMP"/*`，会把分析 JSON、目录树缓存、query 脚本一起删掉。工作目录改用 `%LOCALAPPDATA%\hermes\scan-work\`。
+1. **agent 工作区千万别放 `%TEMP%`**：绿灯项里常有 `rm -rf "$TEMP"/*`，会把分析 JSON、目录树缓存、query 脚本一起删掉。工作目录改用 `%LOCALAPPDATA%\<agent-name>\scan-work\`。
 2. **Everything 溢出值必须过滤**：极端大值（2^64-1）要置 0，详见 [scan-workflow.md](scan-workflow.md)。
 3. **浏览器删除前后逐项核对登录态**：见 [safe-cache-paths-windows.md](safe-cache-paths-windows.md)。
 4. **server.py 启动与渲染验证**：见 [reporting-guide.md](reporting-guide.md)。

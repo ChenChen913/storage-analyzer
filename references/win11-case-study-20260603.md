@@ -2,26 +2,26 @@
 
 ## 环境
 - OS: Windows 11 build 10.0.26200, AMD64 (初版误报为 Windows 10，已修复)
-- Python: 3.11.14 (command: `python`)
+- Python: 3.11.x (command: `python`)
 - Shell: git-bash (MSYS)
-- C: 200 GB (NTFS), D: 274.7 GB
+- 系统盘 + 一块非系统盘，均为 NTFS
 
 ## 扫描结果概要
-C 盘 179.9 GB / 200 GB (90.0%)，D 盘 218.5 GB / 274.7 GB (79.5%)。
+系统盘使用率约九成，非系统盘约八成，两盘合计百万级文件。
 
-### 占用大户
-| 组 | 大小 | 说明 |
-|----|------|------|
-| user_profile | 104.7 GB | 整用户目录，含 AppData |
-| appdata_local | 38.4 GB | JetBrains 5G、npm-cache 3.1G、Google 2.9G 等 |
-| appdata_roaming | 34.3 GB | npm 4.1G、LarkShell 3.6G、TRAE 3.5G 等 |
-| dev_caches | 14.8 GB | JetBrains 5G、.cache 2.3G、VSCode ext 2.2G 等 |
-| D:\DailySoft | 38.2 GB | 夸克/钉钉/百度盘/微信等 51 个应用数据 |
+### 占用大户（分类）
+| 组 | 说明 |
+|----|------|
+| user_profile | 整用户目录，含 AppData |
+| appdata_local | 开发工具、包管理器缓存、浏览器缓存 |
+| appdata_roaming | npm 全局包、桌面应用配置 |
+| dev_caches | IDE 缓存、编辑器扩展、开发工具点目录 |
+| 非系统盘应用数据根目录 | 各类日常应用的数据目录 |
 
-### 分类统计
-- 🟢 可自动清理: 约 16.3 GB
-- 🟡 需人工判断: 约 89.8 GB（含 D 盘）
-- 🔴 谨慎清理: 约 69.3 GB
+### 分类统计（定性）
+- 🟢 可自动清理：缓存、安装包残留为主。
+- 🟡 需人工判断：用户数据、项目代码、应用数据，非系统盘项目基本都归这一级。
+- 🔴 谨慎清理：应用本体与重复安装项。
 
 ## 发现的 skill 问题（已全部修复）
 1. server.py 后台输出被吞 → 已加 `sys.stdout.flush()`

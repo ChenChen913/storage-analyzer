@@ -23,7 +23,7 @@ python scripts/orphan.py --csv "%TEMP%\scan_C.csv" --min-mb 50 > orphans.json
 # 输出自动附最后活动时间与置信度（high/medium/low），days_idle 大的是高置信度弃用候选
 
 # 3) 应用登记表：枚举安装侧应用（Programs / Program Files / 注册表 InstallLocation）+ 用户侧数据目录，
-#    维护「未审查应用清单」。只扫 C 盘会漏掉装在 D 盘的 TRAE/Cursor/VS Code，注册表是跨盘安装的兜底来源
+#    维护「未审查应用清单」。只扫系统盘会漏掉装在其他盘的应用，注册表是跨盘安装的兜底来源
 python scripts/apps.py build --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
 python scripts/apps.py list --unreviewed --min-mb 20
 # 看完一个应用后：python scripts/apps.py mark <key> --note "结论"
@@ -50,5 +50,5 @@ python scripts/registry.py diff --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
 
 - `--csv` 支持传多个文件，缺省会自动发现 `%TEMP%\scan_*.csv`。**不要只传 C 盘 CSV 就跑 baseline**，否则 D 盘目录会被误标成“已删除”。
 - 没有跑 `diff` 就开始分析，视为流程违规。
-- 手工按文件名模式挑清理项属于流程违规——必须先用 `rules.py` 拿成组结果，agent 只做复核定性。实战教训：手工挑了 9 个 lingma zip，同目录 28 个同类 zip 漏网，下一轮成了“新发现”。
+- 手工按文件名模式挑清理项属于流程违规——必须先用 `rules.py` 拿成组结果，agent 只做复核定性。实战教训：手工按文件名模式挑了少数压缩包，同目录同类文件整批漏网，下一轮成了“新发现”。
 - 脚本完整用法与设计说明见 `scripts/registry.py` / `rules.py` / `orphan.py` / `apps.py` 文件头注释。规则表可持续追加到 `scripts/rules.py` 的 RULES。
