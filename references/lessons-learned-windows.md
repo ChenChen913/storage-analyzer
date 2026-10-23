@@ -1,0 +1,151 @@
+# Windows 磁盘分析 · 负面素材库（踩坑实录）
+
+> 用途：这些是从真实执行中踩过的坑。每次分析/清理前先过一遍，避免重蹈覆辙。
+> 来源：2026-07 在 Windows 11 (Lenovo) 上对 C/D 双盘（合计 3,485,054 个文件）的多轮深度分析 + 清理实战。
+
+## 1. 数据层坑
+
+### 1.1 Everything 的"未知大小"占位 2^64-1
+- 现象：某个文件 Everything 无法确定大小（如 `D:\DailySoft\xwechat_files\...\config\0.915570`），返回 `18446744073709551615`。
+- 后果：不做清洗直接聚合，目录大小爆成"18 万亿 GB"，整份聚合结果作废。
+- 处理：解析 CSV 时 `if sz < 0 or sz >= 2**63: sz = 0`，占位不参与统计。
+
+### 1.2 PowerShell 重定向输出是 UTF-16
+- 现象：`python xxx.py > out.json` 在 PowerShell 里写出的文件带 UTF-16 BOM，Python 后续读取乱码/解析失败。
+- 处理：让工具自己写文件（es.exe 用 `-export-csv`，Python 用 `--out`），不要经过 stdout 重定向。
+
+### 1.3 Everything 大小 ≠ 磁盘占用
+- 稀疏文件、压缩文件、硬链接、重解析点（junction）下，索引大小与实际占用有偏差。
+- 典型：WSL 的 `ext4.vhdx`、`pagefile.sys`。不要用索引大小直接当"可释放空间"。
+
+### 1.4 系统文件混入文件清单
+- `pagefile.sys` / `swapfile.sys` / `hiberfil.sys` 会出现在大文件 TopN 里，看似"可删"，实际是系统虚拟内存/休眠文件，不能直接删（只能系统设置里调整）。
+
+## 2. 遍历与删除层坑
+
+### 2.1 只读文件
+- git 仓库、安装目录、node_modules 常见只读属性，`shutil.rmtree` 直接失败。
+- 处理：删除前 `os.chmod(path, stat.S_IWRITE)`，或 rmtree 的 onerror 里 chmod 后重试。
+
+### 2.2 运行中文件锁定（WinError 32）
+- Chrome/Edge/NVIDIA 着色器/输入法服务会锁定正在使用的缓存文件。
+- 后果：整目录删除报错，被误判为"删除失败"。
+- 处理：删除前进程检测；删除时"逐文件跳过锁定 + 报告剩余"，而不是整目录失败；如实标注"关闭程序后可清"。
+
+### 2.3 ACL 拒绝（WinError 5）
+- `C:\ProgramData`、`D:\Config.Msi`（MSI 暂存）、`WeType\patch_exec` 等目录有 ACL，非管理员即使内容已删空，目录壳也删不掉。
+- 处理：内容清空即可视为完成，空壳目录标注"权限限制保留"，不要反复硬删。
+
+### 2.4 损坏的 junction / 符号链接
+- 指向已删除目标的 junction 用普通方式删除会报错。
+- 处理：`cmd /c rd /s /q <path>`（junction 本身），Python 里 `os.path.islink` 判断后直接删链接本体。
+
+### 2.5 os.walk 默认不 follow 链接
+- `os.walk` 默认 `followlinks=False`，会漏掉链接指向的真实内容（大小统计偏差）。
+- 处理：明确 `follow_symlinks=False` 是有意为之（避免死循环），并在覆盖声明里注明。
+
+## 3. 判定层坑（最难的部分）
+
+### 3.1 "多版本并存 + 启动器切换"模式
+- 钉钉 `DingDing\main\current` 与 `current_new` 两个目录**同一天都在更新**（mtime 都是当天），不能凭 mtime 判断谁旧谁新——钉钉每次更新在两个目录间轮换，删错会导致启动失败。
+- Edge `EdgeCore` 保留多个版本号目录；夸克 `Quark\7.0.0.907` / `6.9.8.899` 并存，启动器在根目录。
+- 处理：判定"当前版本"要看**启动器指向**（注册表/快捷方式/Preferences/进程路径），不能只看大小或时间。
+
+### 3.2 "正式版已装" vs "源码克隆"并存
+- 典型案例：`D:\claudecode\ccswitch\cc-switch` 占 9.7GB（Rust debug 构建产物），但用户真正用的是 `C:\Users\<user>\AppData\Local\Programs\CC Switch` 的 30MB 正式版。
+- 不查注册表卸载项/开始菜单快捷方式/进程路径，就无法判断"这个目录到底是不是用户的主程序"，导致不敢删或误删。
+- 处理：分析时必查三处——注册表 Uninstall、Start Menu 快捷方式、当前进程路径。
+
+### 3.3 debug 构建产物异常膨胀
+- Rust/Tauri debug 构建：`cc_switch_lib.lib` 单文件 1.44GB、rlib 0.63GB、PDB 0.4GB（带完整调试符号），加上 deps 4.6GB + incremental 1.6GB，一次 debug 编译可吃掉 9.7GB。
+- 识别：`target/` 目录、`debug/`、`release/` 子目录、`.rlib`/`.lib`/`.pdb` 大量堆积 = 纯构建产物，`cargo build` 可重建，可安全清。
+
+### 3.4 缓存关键字误报
+- `cache` 是子串，会误匹配 `CachedExtensionVSIXs`、`cachet` 等。关键字匹配顺序要"更具体的在前"（`code cache` 先于 `cache`）。
+
+### 3.5 conda/包管理器缓存必须用官方命令
+- 直接删 conda `pkgs` 目录会破坏硬链接和当前环境；`conda clean -a -y` 只清缓存（保留环境在用包），才安全。
+- npm/yarn/pnpm 同理，优先 `npm cache clean` 等官方命令。
+
+## 4. 流程层坑
+
+### 4.1 固定目标列表 = 必然漏项
+- 旧 scan.py 只扫硬编码目标的一级子目录，导致 `.curator_backups`(2.17GB)、`Trae CN\Partitions`(0.97GB)、`TDAppDesktop Service Worker`(1.09GB)、各应用 `QianwenInstaller`(0.44GB) 等连续多轮没被发现。
+- 教训：**全盘清单优先**（Everything 导出或全盘 walk），任何分类必须在完整数据之上做；"目标列表"只能做补充，不能做主数据。
+
+### 4.2 锚定效应：沿用旧报告做增量修补
+- 上一轮报告生成后，后续轮次沿用旧报告结构做"增量"，数据越修越偏，新增长的大目录永远进不了视野。
+- 处理：每轮都重新全盘扫描（Everything 使重扫成本降到秒级），重新聚合，再与旧报告 diff。
+
+### 4.3 缺少自底向上兜底
+- 只有目录聚合（自顶向下）时，聚合逻辑的 bug 会导致整块区域消失且无感。
+- 处理：**双向验证**——目录聚合 × 大文件 TopN × 扩展名统计交叉核对；两边对不上就要查。
+
+### 4.4 空目录/空壳永远看不见
+- 卸载残留的 0 字节目录（如 `kimi`）按大小排序永远不会出现。
+- 处理：专项列出"空目录"或卸载残留，或在应用清单里人工核对。
+
+### 4.5 多轮任务进程/端口残留
+- 多轮报告服务（server.py）会残留多个进程监听不同端口，新旧数据混在一起容易误判。
+- 处理：启动新服务前先按命令行匹配清掉旧进程；报告中标注生成时间。
+
+### 4.6 登录态红线
+- 浏览器 Cookies/密码/Service Worker 数据库混在 `User Data` 里。只清 `Cache`/`Code Cache`/`GPUCache` 等子目录，**绝不动 User Data 根目录**——这是"可自动清理"的边界。
+
+## 5. 覆盖与验证
+
+- 清理后必须**重新导出清单验证**（Everything 索引与实时文件系统有滞后）。
+- 删除后"工具可用性验证"要纳入标准流程：核心工具（hermes/IDE/已装正式版）+ 登录态 + 空间释放三项。
+
+## 6. 2026-08-21 四轮实战复盘：agent 反复漏项的根因与对策（重要）
+
+以下每条都是当天连续四轮扫描中被老板抓到"漏了"之后复盘出来的真实教训，属于**流程强制项**，不是建议。
+
+### 6.1 ⚠️ 铁律：必须建全量目录树，聚合 TopN 只是索引
+
+- **漏项实锤**：scan.py 的 root_depth2/depth3 聚合 + TopN 截断，连续三轮漏掉了 `.box-agent`(1.1GB)、`.workbuddy`(0.81GB)、`.zcode`(0.48GB)、`.lingma`(0.46GB)、`.qoder-cn`(0.64GB) 等十几个 AI 工具点目录（合计约 8GB）——它们全在用户目录第一层，但每个都小于聚合阈值或被 TopN 截掉。
+- **对策**：正式分析必须用 Everything CSV 构建完整目录树（内存中建 `{f, c}` 树 + `cache_totals` 缓存子树大小），**无阈值逐层展开打印全部 ≥15MB 节点**（实测 164 万文件 4 秒建树、4812 行）。聚合排行只用于快速定位，不作为"扫全了"的证据。
+- 树展开后还要做**陌生目录验尸**：对每个叫不出名字的目录下钻到子目录级（`subtree()` 抽取函数见当日会话），直到每个字节的用途都有解释。
+
+### 6.2 ⚠️ 铁律：总账核对——对不上账 = 一定有漏项
+
+- **漏项实锤**：Everything 逻辑总量 177.19 GB vs 磁盘实占 169.4 GB，差 7.8 GB。不对账就永远不知道自己扫漏了多少。
+- **对策**：报告生成前必须做三方核对：① Everything CSV 总量 ② `shutil.disk_usage` 实占 ③ 目录树加总。差额要能解释（本机：WinSxS/Edge 多版本硬链接重复计数 + NTFS 压缩 + MFT ≈ 7.8GB）。解释不了的差额就是漏项，必须找到。
+
+### 6.3 ⚠️ 铁律：清理后必须复扫验证，且清理要"成套"
+
+- **漏项实锤**：第一轮只清了浏览器 `Cache`，漏了同级的 `Service Worker`（Edge 里单站点缓存就 0.63GB）和 `Code Cache`——第二轮才发现。同理清了 npm 主缓存却漏了 `@anthropic-ai/.claude-code-NwVbUxhD` 升级残副本。
+- **对策**：清理浏览器/包管理器时按**缓存家族清单**成套处理：浏览器 = Cache + Code Cache + GPUCache + Service Worker + Shared Dictionary + DawnCache（六件套）；npm 全局 = npm-cache + 包内 .tmp 副本 + node_modules 残留。清完必须**重新导出 CSV 复扫**，用 before/after 对比确认每一项真的没了。
+
+### 6.4 ⚠️ 目录名/内容想当然 = 误判高发区
+
+- **误判实锤**（当天全部真实发生）：
+  - `TRAE SOLO\ModularData` 其实是 TraeCode CN（Trae CN）的数据目录——机器上根本没有叫 TRAE SOLO 的应用；
+  - `Shandianshuo\recordings` 1.13GB 被当成模型，实际是**用户的语音录制历史**（用户数据！差点误删）；
+  - `XiuXiu\Cache` 路径不存在，真实缓存藏在 `XiuXiu\QtWebEngine`；
+  - `pnpm store` 报 62.5GB 实为 1.4GB（junction 幻增）。
+- **对策**：① 任何目录定性前先 drilldown 看实际内容，禁止只凭名字推断；② 判断"应用 X 的数据"前用 `es.exe` 全盘搜可执行文件/注册表卸载项确认应用真名与安装位置；③ `recordings/photos/docs` 等词默认视为用户数据，进黄灯不进绿灯。
+
+### 6.5 es.exe 查询语法坑（这版实测）
+
+- `-sort size-descending`、`size:>100mb` 过滤在这版 **全部静默失效**（返回空或全量），且双 `-path` 参数互斥。
+- **可靠用法**：只用 `-path <盘> -a-d -full-path-and-name -size -no-digit-grouping -export-csv` 导全量清单，**过滤/排序/聚合全部用 Python 做**（CSV 解析 `rfind('",')` 切分）。`-get-total-size`、`-get-result-count` 可用。
+- 专项统计（视频/压缩包/模型/node_modules/.git/同名同大小重复）都基于 CSV 在 Python 里过滤，不要依赖 es 的查询表达式。
+
+### 6.6 长任务与超时管理
+
+- **单脚本 300s 超时会连未完成的删除一起杀**（第一轮删除脚本被杀后进度全丢）。对策：大批量删除/扫描拆成**分段小脚本**，每段 ≤60s、每项打印进度（`flush=True`）；大目录（十万级小文件）删除用分段 `force_rmtree`（`onerror` 里 `chmod + retry`），实测 pnpm store 16 秒清完。
+- 后台任务必须 `process(wait)` 轮询并向老板**汇报进度**（>60s 的静默会被追问"卡住了吗"）。
+- 报告服务残留：启动新 server.py 前用 `netstat -ano`（**必须 `encoding="gbk"`**，否则 UnicodeDecodeError）找旧端口 PID，`os.kill(pid, 15)` 杀掉；`taskkill //PID` 在 git-bash 转义会坏，用 `cmd //c "taskkill /PID x /F"` 或直接 os.kill。
+
+### 6.7 登录态保护的标准动作（用户最在意）
+
+- 删浏览器缓存前后必须**逐文件快照核对**（存在性 + 大小）：`Network\Cookies`、`Login Data`、`Web Data`、`Bookmarks`（Chrome/Edge 各一份，Cookies 在 `profile\Network\` 子目录，Login Data 在 profile 根）。
+- 清 Service Worker/Code Cache 需先 taskkill chrome/msedge/msedgewebview2（SW 被进程锁定，不杀删不掉），删完向用户明确说明"浏览器已关闭，重开后登录状态保持"。
+- 用户原话标准："一定要确保我在登录网页时不会重新输密码"——任何绿灯项若无法 100% 确定与登录态无关，降级为黄灯。
+
+### 6.8 用户偏好（当天确认）
+
+- **只分析 C 盘**，D 盘不扫（用户明确指示过两次）。
+- 绿灯项经用户授权后**直接批量删**，不再逐项确认；但删除范围必须与报告绿灯清单严格一致，不越界。
+- 报告必须走 server.py 网页模式，已清理项从 JSON 移除不占版面。
