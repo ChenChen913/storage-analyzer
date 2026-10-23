@@ -1,0 +1,25 @@
+# NOTICE
+
+本仓库改造自上游项目：
+
+- 上游仓库：https://github.com/KKKKhazix/khazix-skills
+- 上游 skill：`storage-analyzer`
+- 上游作者：数字生命卡兹克
+- 上游许可：MIT
+
+完整 fork（保留上游全部内容，用于记录血缘关系）：
+
+- https://github.com/ChenChen913/khazix-skills
+
+本仓库仅改造并发布 `storage-analyzer` 一个 skill，其余 skill 的版权归原作者所有。
+
+## 本仓库的改造范围
+
+- Windows 数据源适配：Everything / WizTree / walk 三级降级，统一导出「路径,大小」CSV。
+- 增量审计四件套：`rules.py`、`orphan.py`、`apps.py`、`registry.py`。
+- Windows 回收站删除、路径白名单、敏感目录拒绝、操作审计与逐项结果返回。
+- 报告模板、前端交互与扫描可信度展示。
+- 扫描导出完整性校验、状态文件原子写与跨进程锁。
+- 自动化测试（`tests/`）。
+
+macOS 分支保留上游实现，本仓库未复验。Linux 不支持。

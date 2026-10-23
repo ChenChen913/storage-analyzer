@@ -13,9 +13,10 @@
   --csv 可传多个文件（如 C、D 两盘）；缺省自动发现 %TEMP%\\scan_*.csv。
 
 输出 JSON 到 stdout：
-  green_candidates     规则直接判绿的成组路径（zip 组/转储组/日志组）
-  multi_version_groups  多版本共存组（保留最新，旧版可删）
-  cache_families        缓存家族目录组（六件套成套识别）
+  green_candidates     规则可直接判绿的成组路径（zip 组/转储组）
+  review_candidates    名字宽泛或状态不明、必须人工确认的项（tmp/logs/cache、巨型日志）
+  multi_version_groups  多版本共存组（给出建议保留版本，但必须按启动器确认）
+  cache_families        具体缓存目录组（六件套成套识别）
 """
 import os
 import re
@@ -27,14 +28,17 @@ from collections import defaultdict
 
 # ---------- 规则表：从 2026-10-15 六轮实战提炼，可持续追加 ----------
 
-# 目录基名 -> 纯缓存判定（删了不影响功能，随用再生）
-CACHE_BASENAMES = {
-    "cache", "caches", "code cache", "gpucache", "shadercache", "grshadercache",
+# 具体缓存目录基名 -> 可直接判绿（删了不影响功能，随用再生）
+SAFE_CACHE_BASENAMES = {
+    "code cache", "gpucache", "shadercache", "grshadercache",
     "dawncache", "component_crx_cache", "extensions_crx_cache", "crashdumps",
     "imagecache", "jcef_cache", "icon-cache", "compile-cache", "cef_cache",
     "webview2cache", "cacheddata", "cachedextensionvsixs", "cachestorage",
-    "sharedclientcache", "shared dictionary", "tmp", "temp", "logs", "log",
+    "sharedclientcache", "shared dictionary",
 }
+
+# 名字过于宽泛：tmp/logs/cache 也可能是应用正在使用的数据目录，只进待确认
+BROAD_CACHE_BASENAMES = {"cache", "caches", "tmp", "temp", "logs", "log"}
 
 # 语义化版本目录名（bin 下多版本共存判定）
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+")
@@ -44,14 +48,18 @@ PLUGIN_CACHE_RE = re.compile(r"[\\/]plugins[\\/]$", re.IGNORECASE)
 
 
 def load_csv(csv_path):
-    """返回 [(路径, 大小), ...] 全量文件清单"""
+    """返回 [(路径, 大小), ...] 全量文件清单
+
+    用 utf-8-sig 读取：Everything 导出的 CSV 常带 BOM，按固定列偏移截取路径时
+    BOM 会顶掉开头的引号，导致同一个目录被拆成两个键（实战中表现为同组缓存
+    被拆散、漏删）。"""
     out = []
-    with open(csv_path, encoding="utf-8", errors="replace") as f:
+    with open(csv_path, encoding="utf-8-sig", errors="replace") as f:
         for line in f:
             i = line.rfind('",')
             if i < 0:
                 continue
-            p = line[1:i]
+            p = line[1:i] if line.startswith('"') else line[:i].lstrip('"')
             try:
                 sz = int(line[i + 2:].strip())
             except ValueError:
@@ -117,6 +125,7 @@ def main():
     U = os.path.expanduser("~")
 
     green_candidates = []      # 规则直接判绿的组
+    review_candidates = []     # 需人工确认的组
     multi_version_groups = []  # 多版本组
     cache_families = []        # 缓存家族组
 
@@ -152,55 +161,75 @@ def main():
                 bins[parent][base] = sz
     for parent, vers in bins.items():
         if len(vers) >= 2:
-            # 语义化版本排序：2.6.10 > 2.6.9（字符串比较会错）
+            # 语义化版本排序：2.6.10 > 2.6.9；带 -beta/-rc 的同版本排在稳定版之后。
             def ver_key(v):
-                try:
-                    return tuple(int(x) for x in v.split("."))
-                except ValueError:
-                    return (0,)
+                m = re.match(r"^(\d+(?:\.\d+)*)", v)
+                nums = tuple(int(x) for x in m.group(1).split(".")) if m else ()
+                prerelease = bool(re.search(
+                    r"(?i)(alpha|beta|rc|pre|dev|snapshot|nightly)", v))
+                return (nums, 0 if prerelease else 1)
             newest = max(vers, key=ver_key)
             multi_version_groups.append({
                 "rule": "multi_version_bin",
                 "path": parent,
                 "keep": newest,
+                "confidence": "needs_review",
                 "removable": [{"version": v, "size_bytes": s} for v, s in
                               sorted(vers.items(), key=lambda x: ver_key(x[0]), reverse=True)
                               if v != newest],
-                "note": f"多版本共存，保留最新 {newest}，其余旧版本为更新机制不清理的残留",
+                "note": f"多版本共存，按版本号最新的是 {newest}；仅凭目录名不能确认"
+                        "当前版本，必须查启动器/配置/快捷方式指向后再决定旧版是否可删",
             })
 
     # ===== 规则 3：崩溃转储目录 =====
     for d, sz in tree.items():
         base = os.path.basename(d).lower()
-        if base in ("crashdumps", "dumps", "minidump") and sz >= min_b:
+        if base in ("crashdumps", "minidump") and sz >= min_b:
             green_candidates.append({
                 "rule": "crash_dumps",
                 "path": d,
                 "size_bytes": sz,
                 "note": "程序崩溃转储，仅用于事后排查，删除无任何影响",
             })
+        elif base == "dumps" and sz >= min_b:
+            review_candidates.append({
+                "rule": "ambiguous_dumps",
+                "path": d,
+                "size_bytes": sz,
+                "note": "名字只叫 dumps，可能是崩溃转储，也可能是应用数据备份，需看内容",
+            })
 
-    # ===== 规则 4：缓存家族目录（成套识别，整体进绿灯候选） =====
+    # ===== 规则 4：缓存家族目录（具体名直接判绿，宽泛名只进待确认） =====
     for d, sz in tree.items():
+        if sz < min_b:
+            continue
         base = os.path.basename(d).lower()
-        if base in CACHE_BASENAMES and sz >= min_b:
+        if base in SAFE_CACHE_BASENAMES:
             cache_families.append({"path": d, "size_bytes": sz})
+        elif base in BROAD_CACHE_BASENAMES:
+            review_candidates.append({
+                "rule": "broad_cache_name",
+                "path": d,
+                "size_bytes": sz,
+                "note": "目录名宽泛（cache/tmp/logs 等），可能是纯缓存，也可能是应用正在使用的数据，需逐目录看内容",
+            })
 
-    # ===== 规则 5：单文件巨型日志 =====
+    # ===== 规则 5：单文件巨型日志（可能正在写入，只进待确认） =====
     big_logs = []
     for p, sz in files:
         if p.lower().endswith(".log") and sz >= 20 * 2**20:
             big_logs.append({"path": p, "size_bytes": sz})
     for e in sorted(big_logs, key=lambda x: -x["size_bytes"])[:20]:
-        green_candidates.append({
+        review_candidates.append({
             "rule": "big_log_file",
             "path": e["path"],
             "size_bytes": e["size_bytes"],
-            "note": "单文件 >= 20MB 的日志，删除不影响应用运行",
+            "note": "单文件 >= 20MB 的日志；先确认没有进程正在写入，再决定是否清空或删除",
         })
 
     result = {
         "green_candidates": sorted(green_candidates, key=lambda x: -x["size_bytes"]),
+        "review_candidates": sorted(review_candidates, key=lambda x: -x["size_bytes"]),
         "multi_version_groups": sorted(multi_version_groups,
                                         key=lambda x: -sum(v["size_bytes"] for v in x["removable"])),
         "cache_families": sorted(cache_families, key=lambda x: -x["size_bytes"]),
@@ -208,6 +237,8 @@ def main():
             "csv_files": used,
             "green_groups": len(green_candidates),
             "green_bytes": sum(g["size_bytes"] for g in green_candidates),
+            "review_groups": len(review_candidates),
+            "review_bytes": sum(g["size_bytes"] for g in review_candidates),
             "multi_version_groups": len(multi_version_groups),
             "multi_version_removable_bytes": sum(
                 v["size_bytes"] for g in multi_version_groups for v in g["removable"]),

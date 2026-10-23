@@ -36,9 +36,9 @@ description: >
 
 ## 铁律
 
-- **全程只读（唯一例外见下一条）。** 只能跑扫描/统计/列目录/读元信息。绝对禁止 del、rd、rmdir、清空回收站、改权限等任何写操作。
+- **扫描阶段全程只读。** 只能跑扫描/统计/列目录/读元信息。绝对禁止 del、rd、rmdir、清空回收站、改权限等任何写操作。唯一的写操作是用户在本报告网页上主动点击“移到回收站 / 打开目录 / 直接删除”，由 `server.py` 按路径白名单逐项执行；agent 不得在对话或命令行里代跑删除命令。
 - **扫描中间产物必须收尾清理。** `scan.py` 会在 `%TEMP%` 生成 `scan_<盘符>.csv`（单盘 100-250MB，多盘可达 1GB+），还可能留下 `.wiz` 残留。这些文件是 Step 1.5 和 `--reuse-csv` 复扫的必需输入，**扫描后到报告交付前不得删除**；本轮分析彻底结束、用户确认不再复扫后，必须主动询问是否删除（流程见 Step 5）。只删自己命名的 `scan_*.csv` / `scan_*.csv.wiz`，`%TEMP%` 下其他文件一律不碰。
-- **删除命令只展示，不执行。** 报告里的清理命令供用户自己确认后运行。即使用户在对话里说“帮我删”，也要先停下确认（命中全局红线：删除文件必须先问），不要直接代跑。
+- **网页删除按三灯限权。** 绿灯可“移到回收站”；黄灯只允许 `trash_paths` 内的“移到回收站”；红灯只允许“打开目录”。**永久删除默认关闭**，只有用户明确要求时用 `python scripts/server.py --allow-rm <json>` 启动，网页才出现“直接删除”按钮。即使开启，也拒绝家目录根、盘符根、AppData、Desktop/Documents/Downloads、Program Files 根、System32 等敏感路径。即使用户在对话里说“帮我删”，也引导他在网页上逐项确认，不直接代跑。
 - **浏览器 / 应用缓存只删纯缓存。** 登录态文件（`Cookies`、`Login Data`、`Web Data`、`Bookmarks`、`Extensions`、`Preferences`、`History`）一条都不能丢；逐子目录判定见 [safe-cache-paths-windows.md](references/safe-cache-paths-windows.md)。
 - **估算标注清楚。** 涉及“可释放空间”一律说明是估算值。
 - **路径、命令保留原文不翻译。**
@@ -113,7 +113,7 @@ python scripts/registry.py diff --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
 
 把分析结果写成 analysis JSON（schema 见 `scripts/build_report.py` 顶部注释）。报告会自动读取 `state/last_diff.json` 和 `state/registry.json` 标注「新发现 / 删后复发」，所以**必须先跑 `registry.py diff`**；静态模式可用 `--no-history` 关闭。
 
-**🟢 项必须带 `trash_paths`**（具体可删的绝对路径数组，Windows 用反斜杠，必须在 `%USERPROFILE%` 内）——漏了网页删除按钮就不出现。
+**🟢 项必须带 `trash_paths`**（具体可删的绝对路径数组，Windows 用反斜杠）。默认允许根目录是 `%USERPROFILE%` 与 `Program Files`；要放行其他盘（如 `D:\Cache`），启动时加 `--allow-root "D:\"`。漏了 `trash_paths` 或路径不在允许根内，网页删除按钮不会出现。
 
 ```cmd
 python scripts\server.py %TEMP%\storage_analysis.json     # Windows
@@ -123,7 +123,7 @@ python scripts\server.py %TEMP%\storage_analysis.json     # Windows
 python3 scripts/server.py /tmp/storage_analysis.json       # macOS
 ```
 
-`server.py` 起在 127.0.0.1 + 随机端口 + 随机 token，自动打开浏览器。安全模型：`rm` 只允许绿灯 `trash_paths`；`trash` 允许绿灯+橙灯；`open` 再加橙灯 `path`；所有请求 realpath + `$HOME` + token + Host 校验，每次点击先 confirm。
+`server.py` 起在 127.0.0.1 + 随机端口 + 随机 token，自动打开浏览器。安全模型：`rm` 默认关闭，需 `--allow-rm` 显式开启；`trash` 允许绿灯 + 黄灯 `trash_paths`；`open` 允许三灯的路径；所有请求做 token（`compare_digest`）+ Host 校验 + 路径 allowlist + realpath 越界检查 + 敏感目录 denylist；junction/符号链接只删链接本身，不递归目标；回收站操作校验返回码、`fAnyOperationsAborted` 和源路径是否真的消失；每次操作逐项返回结果并追加写入 `state/audit.jsonl`。
 
 启动流程、静态报告、排版字段（`summary.overview`、`tier_stats`、进度条分段）、无按钮排障见 [reporting-guide.md](references/reporting-guide.md)。
 
@@ -154,7 +154,7 @@ python3 scripts/server.py /tmp/storage_analysis.json       # macOS
 
 ## 平台状态
 
-- **Windows**：本仓库维护者实测（Windows 10/11 + Python 3.11 + git-bash）。`scan.py` v2/v3 已实测 Everything、WizTree、walk 三种数据源与增量审计；`server.py` 报告渲染正常，回收站操作待完整实测。
+- **Windows**：本仓库维护者实测（Windows 10/11 + Python 3.11 + git-bash）。`scan.py` v2/v3 已实测 Everything、WizTree、walk 三种数据源与增量审计；`server.py` 报告渲染正常，回收站删除已实测普通文件、中文与空格文件名、空目录、非空目录、只读文件与批量逐项结果，用户取消、文件被占用、超长路径、网络盘未覆盖。
 - **macOS**：上游作者的实现，保留扫描 / 报告 / 废纸篓删除逻辑；本仓库**从未复验**，且 macOS 无 CSV 通路，增量审计四件套不可用。
 - **Linux**：不支持，`scan.py` 显式返回 `unsupported_platform`。
 - 详细踩坑见 [lessons-learned-windows.md](references/lessons-learned-windows.md)，历史案例见 [win11-case-study-20260603.md](references/win11-case-study-20260603.md)、[win11-cleanup-case-20260618.md](references/win11-cleanup-case-20260618.md)、[win11-optimization-case-20260715.md](references/win11-optimization-case-20260715.md)。

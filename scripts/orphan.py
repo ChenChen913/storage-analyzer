@@ -19,6 +19,7 @@ import sys
 import json
 import time
 import argparse
+import difflib
 import winreg
 
 U = os.path.expanduser("~")
@@ -87,31 +88,60 @@ def mtime2(p, max_depth=2, cur=0):
     return latest
 
 
+def _source(sources, name, status, count=0, note=""):
+    sources.append({"source": name, "status": status, "names": count, "note": note})
+
+
 def collect_installed_names():
-    """三处安装证据 -> 已安装应用名集合（规范化）"""
+    """五处安装证据 -> (已安装应用名集合, 证据来源清单)
+
+    证据来源清单会随结果一起输出：某个来源读不到时，必须让使用者看到
+    「这次判断缺了哪一块」，而不是把读不到当成「没安装」。"""
     names = set()
+    sources = []
 
     # 1) %LOCALAPPDATA%\Programs
     prog = os.path.join(LOCAL, "Programs")
     if os.path.isdir(prog):
-        for e in os.scandir(prog):
-            names.add(norm(e.name))
+        try:
+            ents = list(os.scandir(prog))
+            for e in ents:
+                names.add(norm(e.name))
+            _source(sources, "LOCALAPPDATA\\Programs", "ok", len(ents))
+        except OSError as e:
+            _source(sources, "LOCALAPPDATA\\Programs", "denied", 0, str(e))
+    else:
+        _source(sources, "LOCALAPPDATA\\Programs", "missing")
 
     # 2) Program Files 两处
-    for pf in [r"C:\Program Files", r"C:\Program Files (x86)"]:
+    for pf, label in [(r"C:\Program Files", "Program Files"),
+                      (r"C:\Program Files (x86)", "Program Files (x86)")]:
         if os.path.isdir(pf):
             try:
-                for e in os.scandir(pf):
+                ents = list(os.scandir(pf))
+                for e in ents:
                     names.add(norm(e.name))
-            except OSError:
-                pass
+                _source(sources, label, "ok", len(ents))
+            except OSError as e:
+                _source(sources, label, "denied", 0, str(e))
+        else:
+            _source(sources, label, "missing")
 
     # 3) 开始菜单
     sm = os.path.join(U, "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs")
-    for root, dirs, fs in os.walk(sm, onerror=lambda e: None):
+    walk_errors = []
+    lnk = 0
+    for root, dirs, fs in os.walk(sm, onerror=walk_errors.append):
         for f in fs:
             if f.endswith(".lnk"):
                 names.add(norm(os.path.splitext(f)[0]))
+                lnk += 1
+    if not os.path.isdir(sm):
+        _source(sources, "Start Menu", "missing")
+    elif walk_errors:
+        _source(sources, "Start Menu", "denied", lnk, "%d 个目录无法读取" % len(walk_errors))
+    else:
+        _source(sources, "Start Menu", "ok", lnk)
 
     # 4) WindowsApps（Store 应用）：包名形如 Publisher.App_版本_架构_哈希
     # 目录本身受 ACL 保护，普通权限 scandir 会 PermissionError，改从注册表
@@ -126,13 +156,17 @@ def collect_installed_names():
                     pkgs.add(winreg.EnumKey(k, i))
                 except OSError:
                     pass
-    except OSError:
+        _source(sources, "WindowsApps (AppModel)", "ok", len(pkgs))
+    except OSError as e:
         wa = r"C:\Program Files\WindowsApps"
         if os.path.isdir(wa):
             try:
-                pkgs = {e.name for e in os.scandir(wa)}
-            except OSError:
-                pass
+                pkgs = {e2.name for e2 in os.scandir(wa)}
+                _source(sources, "WindowsApps (directory)", "ok", len(pkgs), "注册表不可读，改用目录枚举")
+            except OSError as e2:
+                _source(sources, "WindowsApps", "denied", 0, "注册表与目录均不可读：%s / %s" % (e, e2))
+        else:
+            _source(sources, "WindowsApps", "denied", 0, "注册表不可读：%s" % e)
     for full in pkgs:
         pkg = full.split("_")[0]
         names.add(norm(pkg))
@@ -143,6 +177,9 @@ def collect_installed_names():
             names.add(norm(tail))
 
     # 5) 注册表卸载键
+    reg_ok = 0
+    reg_names = 0
+    reg_errors = []
     for hive, key_path in [
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
@@ -150,8 +187,10 @@ def collect_installed_names():
     ]:
         try:
             key = winreg.OpenKey(hive, key_path)
-        except OSError:
+        except OSError as e:
+            reg_errors.append("%s: %s" % (key_path, e))
             continue
+        reg_ok += 1
         with key:
             i = 0
             while True:
@@ -165,22 +204,50 @@ def collect_installed_names():
                         try:
                             dn, _ = winreg.QueryValueEx(sk, "DisplayName")
                             names.add(norm(dn))
+                            reg_names += 1
                         except OSError:
                             pass
                 except OSError:
                     pass
-    return names
+    if reg_ok == 3:
+        _source(sources, "卸载注册表", "ok", reg_names)
+    elif reg_ok:
+        _source(sources, "卸载注册表", "partial", reg_names, "; ".join(reg_errors))
+    else:
+        _source(sources, "卸载注册表", "denied", 0, "; ".join(reg_errors))
+    return names, sources
+
+
+def match_installed(nb, alias_hit, installed):
+    """候选名 -> (匹配置信方式, 命中的安装名)
+
+    只允许三种命中：别名精确、规范化精确、长名互相包含。互相包含限制最短
+    5 个字符且长度比 >= 0.5：原来「长度差 < 8 就子串命中」会让 qq / dsh 之类
+    的短名被任意长名吞掉，把真残留误判成「已安装」，这正是漏删的来源。"""
+    if alias_hit and alias_hit in installed:
+        return "alias", alias_hit
+    if nb in installed:
+        return "exact", nb
+    if len(nb) < 5:
+        return None, None
+    for n in installed:
+        if not n or len(n) < 5:
+            continue
+        short, long_ = (nb, n) if len(nb) <= len(n) else (n, nb)
+        if short in long_ and len(short) / len(long_) >= 0.5:
+            return "contains", n
+    return None, None
 
 
 def load_csv_tree(csv_path):
     """CSV -> {目录: 子树大小}（含祖先传播）"""
     direct = {}
-    with open(csv_path, encoding="utf-8", errors="replace") as f:
+    with open(csv_path, encoding="utf-8-sig", errors="replace") as f:
         for line in f:
             i = line.rfind('",')
             if i < 0:
                 continue
-            p = line[1:i]
+            p = line[1:i] if line.startswith('"') else line[:i].lstrip('"')
             try:
                 sz = int(line[i + 2:].strip())
             except ValueError:
@@ -214,7 +281,8 @@ def main():
     min_b = int(args.min_mb * 2**20)
 
     csv_tree = load_csv_tree(args.csv) if args.csv and os.path.exists(args.csv) else None
-    installed = collect_installed_names()
+    installed, sources = collect_installed_names()
+    incomplete = [s["source"] for s in sources if s["status"] in ("denied", "partial")]
 
     candidates = []
     # 候选来源三处：Roaming 一级、Local 一级、~ 下点目录
@@ -236,14 +304,10 @@ def main():
         nb = norm(base)
         if nb in INFRA:
             continue
-        # 名称匹配：直接/别名/安装名包含
+        # 名称匹配：别名精确 / 规范化精确 / 受限的长名互相包含
         alias_hit = norm(ALIAS.get(base.lower(), nb))
-        installed_hit = (
-            alias_hit in installed
-            or nb in installed
-            or any(nb and (nb in n or n in nb) for n in installed if abs(len(n) - len(nb)) < 8)
-        )
-        if installed_hit:
+        kind, _ = match_installed(nb, alias_hit, installed)
+        if kind:
             continue
         if csv_tree is not None:
             sz = csv_tree.get(p, 0)
@@ -258,28 +322,52 @@ def main():
         days = round((time.time() - m) / 86400, 0) if m else -1
         if days < 0:
             confidence = "unknown"
-        elif days >= 90:
-            confidence = "high"
-        elif days >= 30:
-            confidence = "medium"
+            basis = "目录内文件 mtime 不可读，无法判断最后活动时间"
         else:
-            confidence = "low"
+            if days >= 90:
+                confidence = "high"
+            elif days >= 30:
+                confidence = "medium"
+            else:
+                confidence = "low"
+            basis = "最后活动 %d 天前，安装侧五处证据均未命中" % days
+        if incomplete and confidence == "high":
+            confidence = "medium"
+            basis += "；安装证据不完整（%s），置信度上限降为 medium" % "、".join(incomplete)
         orphans.append({
             "path": p,
             "size_bytes": sz,
             "last_active": time.strftime("%Y-%m-%d", time.localtime(m)) if m else "未知",
             "days_idle": days,
             "confidence": confidence,
-            "note": "数据目录存在，未找到对应安装（Programs/Program Files/WindowsApps/开始菜单/卸载注册表）",
+            "confidence_basis": basis,
+            "name_checked": {
+                "raw": base,
+                "normalized": nb,
+                "alias": alias_hit if alias_hit != nb else "",
+            },
+            "evidence": {
+                "matched": None,
+                "closest_installed": difflib.get_close_matches(nb, installed, n=2, cutoff=0.72),
+                "sources_checked": len(sources),
+                "sources_incomplete": incomplete,
+            },
+            "note": "数据目录存在，五处安装证据均未找到对应应用；请结合下方证据链人工确认",
         })
 
     orphans.sort(key=lambda x: -x["size_bytes"])
     print(json.dumps({
         "installed_names_count": len(installed),
+        "install_evidence": {
+            "sources": sources,
+            "incomplete": incomplete,
+        },
         "orphans": orphans,
         "summary": {
             "count": len(orphans),
             "total_bytes": sum(o["size_bytes"] for o in orphans),
+            "high_confidence": sum(1 for o in orphans if o["confidence"] == "high"),
+            "incomplete_install_evidence": bool(incomplete),
         },
     }, ensure_ascii=False, indent=1))
 

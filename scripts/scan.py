@@ -199,18 +199,52 @@ def find_es():
     return None
 
 
+def _csv_rows(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return 0
+
+
 def es_export_csv(es, drive, out_csv, timeout=1200):
     """Everything 导出某盘全部文件清单（路径+大小）。让 es 自己写文件，规避
-    PowerShell 重定向 UTF-16 与命令行超长问题。"""
+    PowerShell 重定向 UTF-16 与命令行超长问题。
+
+    导出前后各跑一次同一查询：先取 -get-result-count，再导出并核对行数。
+    索引过期、排除项或 IPC 半失败时，文件可能"非空但严重不全"；只看返回码
+    会把这种结果当成功，后续总账永远对不平。行数不足 98% 即判失败并删掉
+    半成品，交给下一个数据源。"""
+    query = [es, "-path", drive, "/a-d",
+             "-full-path-and-name", "-size", "-no-digit-grouping"]
+    expected = None
     try:
-        r = _sp.run(
-            [es, "-path", drive, "/a-d",
-             "-full-path-and-name", "-size", "-no-digit-grouping",
-             "-export-csv", out_csv, "-no-header"],
-            capture_output=True, text=True, timeout=timeout)
-        return r.returncode == 0 and os.path.exists(out_csv) and os.path.getsize(out_csv) > 0
-    except Exception:
-        return False
+        r = _sp.run(query + ["-get-result-count"],
+                    capture_output=True, text=True, timeout=timeout)
+        if r.returncode == 0:
+            lines = [x.strip() for x in r.stdout.splitlines() if x.strip()]
+            if lines:
+                try:
+                    expected = int(lines[-1].replace(",", ""))
+                except ValueError:
+                    expected = None
+        r = _sp.run(query + ["-export-csv", out_csv, "-no-header"],
+                    capture_output=True, text=True, timeout=timeout)
+        if (r.returncode != 0 or not os.path.exists(out_csv)
+                or os.path.getsize(out_csv) == 0):
+            return {"ok": False, "expected": expected, "actual": 0,
+                    "error": "es.exe 导出失败或输出为空"}
+        actual = _csv_rows(out_csv)
+        if expected and actual < expected * 0.98:
+            try:
+                os.remove(out_csv)
+            except OSError:
+                pass
+            return {"ok": False, "expected": expected, "actual": actual,
+                    "error": "导出行数 %d 明显少于索引计数 %d" % (actual, expected)}
+        return {"ok": True, "expected": expected, "actual": actual, "error": ""}
+    except Exception as e:
+        return {"ok": False, "expected": expected, "actual": 0, "error": str(e)}
 
 
 # ---- WizTree 探测（Everything 之外的第二数据源）----
@@ -473,11 +507,16 @@ def combined_pass(csv_path, drive, min_dir_mb=10, big_mb=100,
 # ---- Everything 不可用时的回退：os.scandir 全盘遍历（写同样格式 CSV）----
 def walk_export_csv(drive, out_csv):
     """无 Everything 时保证全盘覆盖。慢（350 万文件约 30-90 分钟），
-    大磁盘强烈建议装 Everything。跳过 symlink 与无权限目录。"""
-    n = 0
+    大磁盘强烈建议装 Everything。跳过 symlink 与无权限目录，并统计拒绝数量，
+    不再静默吞掉权限错误。"""
+    stats = {"files": 0, "denied": 0, "errors": []}
+
+    def note(msg):
+        if len(stats["errors"]) < 20:
+            stats["errors"].append(msg)
+
     with open(out_csv, "w", encoding="utf-8") as f:
         def visit(d):
-            nonlocal n
             try:
                 with os.scandir(d) as it:
                     for e in it:
@@ -487,15 +526,21 @@ def walk_export_csv(drive, out_csv):
                             if e.is_file(follow_symlinks=False):
                                 sz = e.stat(follow_symlinks=False).st_size
                                 f.write('"%s",%d\n' % (e.path.replace('"', '""'), sz))
-                                n += 1
+                                stats["files"] += 1
                             elif e.is_dir(follow_symlinks=False):
                                 visit(e.path)
-                        except (PermissionError, OSError):
-                            continue
-            except (PermissionError, OSError):
-                pass
+                        except PermissionError:
+                            stats["denied"] += 1
+                            note("权限拒绝：%s" % e.path)
+                        except OSError as ex:
+                            note("%s：%s" % (e.path, ex))
+            except PermissionError:
+                stats["denied"] += 1
+                note("权限拒绝：%s" % d)
+            except OSError as ex:
+                note("%s：%s" % (d, ex))
         visit(drive)
-    return n > 0
+    return stats
 
 
 def list_drives_windows():
@@ -627,54 +672,92 @@ def scan_windows(opts):
     groups = {}
     coverage = {"method": "none", "source_requested": source,
                 "es_path": es, "wiztree_path": wz, "drives": drives,
-                "files_scanned": 0, "reused_csv": []}
+                "files_scanned": 0, "reused_csv": [],
+                "drives_detail": [], "fallback_reasons": [],
+                "denied_dirs": 0, "errors": [], "partial": False}
     used = set()
     reused_drives = []
     for drive in drives:
         csv_path = os.path.join(tmpdir, "scan_%s.csv" % drive[0])
+        detail = {"drive": drive, "source": None, "files": 0, "reused": False,
+                  "denied": 0, "status": "ok", "fallbacks": [], "errors": []}
         if opts.get("reuse_csv") and os.path.exists(csv_path) \
                 and os.path.getsize(csv_path) > 0:
             reused_drives.append(csv_path)  # 复用上次导出的清单，跳过重复导出
+            detail["reused"] = True
+            detail["source"] = "reused"
             print("reused existing csv: %s" % csv_path, file=sys.stderr)
         else:
             picked = None
             for src in SOURCE_CHAIN[source]:
                 if src == "everything":
                     if not es:
+                        msg = "未找到 es.exe"
+                        detail["fallbacks"].append({"source": "everything", "reason": msg})
                         if source == "everything":
-                            print("未找到 es.exe：请安装 Everything，或设置 PATH", file=sys.stderr)
+                            print(msg + "：请安装 Everything，或设置 PATH", file=sys.stderr)
                         continue
-                    if es_export_csv(es, drive, csv_path):
+                    info = es_export_csv(es, drive, csv_path)
+                    if info["ok"]:
                         picked = "everything"
+                        detail["expected"] = info.get("expected")
                         break
+                    reason = info.get("error") or "导出失败"
                     # ES 存在但 Everything 没运行时，es.exe 会报 Error 8（IPC window not found）
-                    print("Everything 导出失败（常见原因：Everything 未启动），%s 盘" % drive,
-                          file=sys.stderr)
+                    print("Everything %s（常见原因：Everything 未启动），%s 盘"
+                          % (reason, drive), file=sys.stderr)
+                    detail["fallbacks"].append({"source": "everything", "reason": reason})
                 elif src == "wiztree":
                     if not wz:
+                        msg = "未找到 WizTree（wiztree64.exe）"
+                        detail["fallbacks"].append({"source": "wiztree", "reason": msg})
                         if source == "wiztree":
-                            print("未找到 WizTree（wiztree64.exe）：请安装 WizTree，"
-                                  "或设置环境变量 %s 指向 exe" % WIZTREE_ENV, file=sys.stderr)
+                            print(msg + "：请安装 WizTree，"
+                                  "或设置环境变量 %s 指向 exe" % WIZTREE_ENV,
+                                  file=sys.stderr)
                         continue
                     if wiztree_export_csv(wz, drive, csv_path,
                                           admin=bool(opts.get("wiztree_admin"))):
                         picked = "wiztree"
                         break
-                    print("WizTree 导出失败，%s 盘" % drive, file=sys.stderr)
+                    reason = "WizTree 导出失败或清单为空"
+                    print("%s，%s 盘" % (reason, drive), file=sys.stderr)
+                    detail["fallbacks"].append({"source": "wiztree", "reason": reason})
                 else:
                     print("%s 盘回退全盘遍历（无可用索引工具），耗时较长" % drive,
                           file=sys.stderr)
-                    if walk_export_csv(drive, csv_path):
+                    wstats = walk_export_csv(drive, csv_path)
+                    detail["denied"] += wstats["denied"]
+                    detail["errors"] = list(wstats["errors"])
+                    if wstats["files"] > 0:
                         picked = "walk"
                         break
+                    reason = "全盘遍历没有产出文件"
+                    print("%s，%s 盘" % (reason, drive), file=sys.stderr)
+                    detail["fallbacks"].append({"source": "walk", "reason": reason})
             if not picked:
                 print("%s 盘所有数据源均失败，跳过该盘" % drive, file=sys.stderr)
+                detail["status"] = "failed"
+                coverage["partial"] = True
+                coverage["drives_detail"].append(detail)
+                coverage["errors"].extend(detail["errors"])
                 continue
             used.add(picked)
+            detail["source"] = picked
         res = combined_pass(csv_path, drive, min_dir_mb=min_dir_mb, big_mb=big_mb,
                             cache_mb=cache_mb, updater_mb=updater_mb,
                             ver_mb=ver_mb, top=top)
+        detail["files"] = res["count"]
         coverage["files_scanned"] += res["count"]
+        coverage["denied_dirs"] += detail["denied"]
+        coverage["errors"].extend(detail["errors"])
+        if detail["denied"]:
+            coverage["partial"] = True
+        if detail["fallbacks"]:
+            pairs = "；".join("%s: %s" % (x["source"], x["reason"])
+                             for x in detail["fallbacks"])
+            coverage["fallback_reasons"].append("%s %s" % (drive, pairs))
+        coverage["drives_detail"].append(detail)
         g = groups.setdefault("drive_" + drive[0], {})
         g["root_depth2"] = res["dir2"]
         g["root_depth3"] = res["dir3"]
@@ -685,6 +768,8 @@ def scan_windows(opts):
         g["version_dirs"] = res["version_dirs"]
 
     coverage["reused_csv"] = reused_drives
+    coverage["errors"] = coverage["errors"][:30]
+    coverage["complete"] = not coverage["partial"]
     coverage["method"] = "+".join(
         s for s in ("everything", "wiztree", "walk") if s in used) \
         or ("reused" if reused_drives else "none")
@@ -771,6 +856,11 @@ def main():
             "system": system, "groups": groups, "_hierarchy": hierarchy,
             "coverage": {"method": "du", "drives": ["/"],
                          "files_scanned": None,
+                         "drives_detail": [{"drive": "/", "source": "du",
+                                            "files": None, "denied": 0,
+                                            "status": "ok"}],
+                         "fallback_reasons": [], "denied_dirs": 0,
+                         "errors": [], "partial": False, "complete": None,
                          "note": "macOS 用 du 统计目标目录，非全盘文件清单"},
             "temp_artifacts": {"dir": _tf.gettempdir(), "files": [],
                                "total_kb": 0, "total_h": "0 KB",

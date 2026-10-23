@@ -18,7 +18,7 @@
 
 报告会自动读取 `state/last_diff.json` 和 `state/registry.json`，给每项补「新发现 / 删后复发」标记和「最后活动」时间（没有标记的就是上轮已存在）。所以**必须先跑 `registry.py diff` 再生成报告**；静态模式可用 `--no-history` 关闭。
 
-**🟢 项必须带 `trash_paths`**（具体可删的绝对路径数组，区别于人类可读的 `path` 展示字段）——这是网页删除按钮的前提，漏了按钮就不出现。Windows 路径用反斜杠，确保在 `%USERPROFILE%` 内（白名单校验前提）。
+**🟢 项必须带 `trash_paths`**（具体可删的绝对路径数组，区别于人类可读的 `path` 展示字段）——这是网页删除按钮的前提，漏了按钮就不出现。Windows 路径用反斜杠，默认允许根是 `%USERPROFILE%` 与 `Program Files`；其他盘的路径需要启动服务时加 `--allow-root "D:\"`。
 
 ## 一键删除模式与安全模型
 
@@ -38,15 +38,15 @@ python3 scripts/server.py /tmp/storage_analysis.json
 
 `server.py` 起在 127.0.0.1 + 随机端口 + 随机 token，自动用默认浏览器打开。Ctrl+C 停。
 
-🟢 项给「移到回收站/废纸篓」(可逆) + 「直接删除」(立即释放、不可逆)；🟡 项给「在资源管理器/访达打开」+（有安全子路径时）「移到回收站/废纸篓」。
+🟢 项给「移到回收站/废纸篓」(可逆)；只有显式加 `--allow-rm` 启动时才额外给「直接删除」(立即释放、不可逆)。🟡 项给「在资源管理器/访达打开」+（有安全子路径时）「移到回收站/废纸篓」。
 
-**安全模型——三套白名单，权限从严到宽**：`rm` 只允许绿灯 `trash_paths`；`trash` 允许绿灯+橙灯 `trash_paths`（橙灯永远不能 rm）；`open`（在文件管理器打开，非破坏性）允许上述全部 + 橙灯真实 `path`。所有请求 realpath 校验 + 必须在 `$HOME` 内 + token + Host 校验，每次点击浏览器先 confirm。
+**安全模型——三套白名单，权限从严到宽**：`rm` 只允许绿灯 `trash_paths`，且服务必须用 `--allow-rm` 启动，否则请求被 403 拒绝；`trash` 允许绿灯+橙灯 `trash_paths`（橙灯永远不能 rm）；`open`（在文件管理器打开，非破坏性）允许上述全部 + 橙灯真实 `path`。所有请求 realpath 校验 + 必须在允许根内（默认 `$HOME` 与 `Program Files`，其他盘用 `--allow-root` 放行）+ 敏感目录 denylist + token + Host 校验，每次点击浏览器先 confirm。
 
 ## Windows 服务启动流程
 
 即使加了 `-u` 去缓冲，agent 的 `terminal(background=true)` 模式下 `server.py` 的 stdout 可能完全不显示（实测 git-bash + Python 3.11）。
 
-- **常规做法**：先在前台运行一次抓 URL（`timeout=15` 即可，server 启动后 1-2 秒就打印 URL），然后用 `background=true` 重新运行 `server.py`（会分配新端口），拿到新 URL 后 `browser_navigate` 打开。`server.py` 不支持 `--port` 参数，每次重启端口都是新的。
+- **常规做法**：先在前台运行一次抓 URL（`timeout=15` 即可，server 启动后 1-2 秒就打印 URL），然后用 `background=true` 重新运行 `server.py`（会分配新端口），拿到新 URL 后 `browser_navigate` 打开。需要固定端口时用 `--port 50500`；不加参数则每次重启端口都是新的。
 - **更省事的做法**：`execute_code` 里 `subprocess.Popen([py,"-u",server.py,json], stdout=log, creationflags=DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP)`，sleep 5 读日志拿 URL；日志出现「绿灯可删 N 项」即证明 JSON 被正确解析。换报告先 `taskkill /F /PID <旧pid>`。
 - **验证渲染**：`curl http://127.0.0.1:<port>/` 返回 200 + 完整 HTML 即通过（GET / 无需 token）。`browser_navigate` 缺 playwright 内核时，用系统 Chrome 无头截图兜底：
   `"/c/Program Files/Google/Chrome/Application/chrome.exe" --headless=new --disable-gpu --hide-scrollbars --window-size=1500,3000 --screenshot=out.png http://127.0.0.1:PORT/`

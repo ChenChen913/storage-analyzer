@@ -158,6 +158,9 @@
   .note{font-size:12px;color:var(--sub);margin-top:8px}
   .denied{background:var(--yellow-bg);border:1px solid #ffd591;border-radius:10px;
     padding:12px 14px;font-size:13px;margin-top:12px}
+  .coverage{background:var(--accent-bg);border:1px solid #bedaff;border-radius:10px;
+    padding:10px 14px;font-size:13px;line-height:1.7;margin-bottom:20px}
+  .coverage b{color:var(--accent)}
   footer{text-align:center;color:var(--sub);font-size:12px;margin-top:40px}
 
   @media(max-width:600px){
@@ -180,7 +183,7 @@
     ⚠️ 无法连接到本地服务——按钮功能不可用。请确认 <code>server.py</code> 仍在运行，然后刷新页面。
   </div>
   <div id="app"></div>
-  <footer>storage-analyzer · 只读分析 · 删除命令请自行在终端确认后执行</footer>
+  <footer>storage-analyzer · 扫描阶段只读 · 清理动作逐项确认后执行</footer>
 </div>
 
 <script>
@@ -206,7 +209,7 @@ const TRASH_WORD = OS_KIND==='win' ? '回收站' : OS_KIND==='mac' ? '废纸篓'
 const OS_ICON = {win:'🪟', mac:'🍎', linux:'🐧', unknown:'💻'}[OS_KIND];
 const OS_FALLBACK = {win:'Windows', mac:'macOS', linux:'Linux', unknown:'未知系统'}[OS_KIND];
 
-const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const cleanSize = s => String(s==null?'':s).replace(/[（(]\s*估算[^）)]*[）)]/g, '').trim();
 
 // 检测 server.py 是否在线（静态报告时跳过）
@@ -363,9 +366,12 @@ function renderGreen(items){
 function greenBatchActions(items){
   if(!DELETE) return '';
   if(!items.some(it => it.trash_paths && it.trash_paths.length)) return '';
+  const rmBtn = DELETE.allow_rm
+    ? `<button class="del-btn danger" onclick="doBatch(this,'rm')">全部删除</button>`
+    : '';
   return `<span class="sec-actions">
     <button class="del-btn trash" onclick="doBatch(this,'trash')">全部移${TRASH_WORD}</button>
-    <button class="del-btn danger" onclick="doBatch(this,'rm')">全部删除</button>
+    ${rmBtn}
     <span class="del-status sec-status"></span>
   </span>`;
 }
@@ -384,35 +390,57 @@ function doBatch(btn, mode){
   });
   const verb = mode==='rm' ? '直接删除（不可恢复）' : `移到${TRASH_WORD}（可逆，清空后释放）`;
   const sizeStr = gb>0 ? `，约 ${gb.toFixed(1)} GB` : '';
-  if(!confirm(`确认将这组 ${wraps.length} 项缓存全部${verb}？\n共 ${allPaths.length} 个路径${sizeStr}。`)) return;
+  // 逐条列出全部路径：批量操作不能只报数量和估算大小
+  if(!confirm(`确认将这组 ${wraps.length} 项缓存全部${verb}？\n共 ${allPaths.length} 个路径${sizeStr}：\n\n${allPaths.join('\n')}`)) return;
   postAction(secActions, allPaths, mode).then(res=>{
-    if(res.ok){
-      status.textContent = mode==='rm' ? `✓ 已删除 ${wraps.length} 项` : `✓ 已移 ${wraps.length} 项到${TRASH_WORD}`;
-      status.className='del-status sec-status ok';
-      wraps.forEach(w=>{
-        const item=w.closest('.item'); item.classList.add('cleaned');
-        const badge=item.querySelector('.item-head .item-badge');
-        if(badge) badge.textContent = mode==='rm' ? '已删除' : `已移${TRASH_WORD}`;
+    if(res.error && !res.results){
+      status.textContent='✗ '+res.error; status.className='del-status sec-status err'; return;
+    }
+    const done = new Set(res.done||[]);
+    let okItems = 0;
+    wraps.forEach(w=>{
+      const paths = JSON.parse(decodeURIComponent(escape(atob(w.dataset.paths))));
+      if(!paths.every(p=>done.has(p))){
         const ist=w.querySelector('.del-status');
-        if(ist){ ist.textContent = mode==='rm'?'✓ 已删除':`✓ 已移到${TRASH_WORD}`; ist.className='del-status ok'; }
-        w.querySelectorAll('.del-btn.trash,.del-btn.danger').forEach(b=>b.remove());
-      });
+        if(ist){ ist.textContent='✗ 有路径未完成'; ist.className='del-status err'; }
+        return;
+      }
+      okItems++;
+      const item=w.closest('.item'); item.classList.add('cleaned');
+      const badge=item.querySelector('.item-head .item-badge');
+      if(badge) badge.textContent = mode==='rm' ? '已删除' : `已移${TRASH_WORD}`;
+      const ist=w.querySelector('.del-status');
+      if(ist){ ist.textContent = mode==='rm'?'✓ 已删除':`✓ 已移到${TRASH_WORD}`; ist.className='del-status ok'; }
+      w.querySelectorAll('.del-btn.trash,.del-btn.danger').forEach(b=>b.remove());
+    });
+    if(res.ok){
+      status.textContent = mode==='rm' ? `✓ 已删除 ${okItems} 项` : `✓ 已移 ${okItems} 项到${TRASH_WORD}`;
+      status.className='del-status sec-status ok';
       secActions.querySelectorAll('.del-btn').forEach(b=>b.remove());
-    } else { status.textContent='✗ '+(res.error||'失败'); status.className='del-status sec-status err'; }
+    } else {
+      status.textContent = `部分完成：成功 ${okItems} 项，失败 ${res.failed||0} 个路径`;
+      status.className='del-status sec-status err';
+    }
   });
 }
 
 function delBlock(it){
   if(!DELETE || !it.trash_paths || !it.trash_paths.length) return '';
   const payload = btoa(unescape(encodeURIComponent(JSON.stringify(it.trash_paths))));
+  const rmBtn = DELETE.allow_rm
+    ? `<button class="del-btn danger" onclick="doDelete(this,'rm')">直接删除</button>`
+    : '';
+  const note = DELETE.allow_rm
+    ? `<div class="del-note"><b>移到${TRASH_WORD}</b>：可逆，删错能从${FM}${TRASH_WORD}捞回，但要清空${TRASH_WORD}才真正释放空间。<b>直接删除</b>：立即释放、不可恢复。绿灯都是可再生缓存，删了会自动重建。</div>`
+    : `<div class="del-note"><b>移到${TRASH_WORD}</b>：可逆，删错能从${FM}${TRASH_WORD}捞回，清空${TRASH_WORD}后释放空间。本次服务未启用永久删除（默认关闭），需要时由用户授权后加 <code>--allow-rm</code> 重启服务。</div>`;
   return `<div class="field del-actions" data-paths="${payload}">
     <div class="label">在网页上直接处理（${it.trash_paths.length} 个路径）</div>
     <div class="del-row">
       <button class="del-btn trash" onclick="doDelete(this,'trash')">移到${TRASH_WORD}</button>
-      <button class="del-btn danger" onclick="doDelete(this,'rm')">直接删除</button>
+      ${rmBtn}
       <span class="del-status"></span>
     </div>
-    <div class="del-note"><b>移到${TRASH_WORD}</b>：可逆，删错能从${FM}${TRASH_WORD}捞回，但要清空${TRASH_WORD}才真正释放空间。<b>直接删除</b>：立即释放、不可恢复。绿灯都是可再生缓存，删了会自动重建。</div>
+    ${note}
   </div>`;
 }
 
@@ -438,7 +466,11 @@ function doDelete(btn, mode){
   if(!confirm(`确认${verb}以下 ${paths.length} 个路径？\n\n`+paths.join('\n'))) return;
   postAction(wrap, paths, mode).then(res=>{
     const status = wrap.querySelector('.del-status');
-    if(res.ok){
+    if(res.error && !res.results){
+      status.textContent='✗ '+res.error; status.className='del-status err'; return;
+    }
+    const done = new Set(res.done||[]);
+    if(paths.every(p=>done.has(p))){
       status.textContent = mode==='rm' ? '✓ 已删除，空间已释放' : `✓ 已移到${TRASH_WORD}（${FM}可恢复，清空后释放空间）`;
       status.className='del-status ok';
       wrap.querySelectorAll('.del-btn.trash,.del-btn.danger').forEach(b=>b.remove());
@@ -448,7 +480,15 @@ function doDelete(btn, mode){
         const badge = item.querySelector('.item-head .item-badge');
         if(badge) badge.textContent = mode==='rm' ? '已删除' : `已移${TRASH_WORD}`;
       }
-    } else { status.textContent='✗ '+(res.error||'失败'); status.className='del-status err'; }
+    } else {
+      const left = paths.filter(p=>!done.has(p));
+      const firstErr = (res.results||[]).find(r=>!r.ok && r.error);
+      status.textContent = `部分失败（剩余 ${left.length} 个路径）` + (firstErr ? '：'+firstErr.error : '');
+      status.className='del-status err';
+      wrap.dataset.paths = btoa(unescape(encodeURIComponent(JSON.stringify(left))));
+      const label = wrap.querySelector('.label');
+      if(label) label.textContent = `在网页上直接处理（剩余 ${left.length} 个路径）`;
+    }
   });
 }
 
@@ -552,6 +592,28 @@ function renderLongTerm(sm){
   return `<div class="sec"><h2>长期优化建议</h2><div class="summary">${sumList(sm.long_term)}</div></div>`;
 }
 
+function renderCoverage(){
+  const c = DATA.coverage;
+  if(!c) return '';
+  const bits = [];
+  if(c.method) bits.push(`数据源 ${c.method}`);
+  if(typeof c.files_scanned === 'number') bits.push(`文件 ${c.files_scanned.toLocaleString()}`);
+  if(c.partial) bits.push('部分目录未读取');
+  const drives = (c.drives_detail||[]).map(d=>{
+    let s = `${d.drive} ${d.source||'失败'}`;
+    if(d.reused) s += '，复用旧 CSV';
+    if(d.denied) s += `，权限拒绝 ${d.denied}`;
+    if(d.status && d.status !== 'ok') s += `，${d.status}`;
+    return s;
+  }).join('；');
+  const fb = (c.fallback_reasons||[]).slice(0,5).join('；');
+  if(!bits.length && !drives && !fb) return '';
+  let html = `<div class="coverage"><b>扫描可信度</b>：${esc(bits.join(' · '))}`;
+  if(drives) html += `<br>${esc(drives)}`;
+  if(fb) html += `<br>回退原因：${esc(fb)}`;
+  return html + '</div>';
+}
+
 function renderDenied(){
   if(!DATA.denied||!DATA.denied.length) return '';
   return `<div class="denied">⚠️ <b>以下目录权限不足未能读取，可能遗漏体量：</b><br>${DATA.denied.map(p=>`<code>${esc(p)}</code>`).join('<br>')}${IS_WIN?'<br><small>Windows 提示：部分系统目录需要管理员权限，属正常现象。</small>':''}</div>`;
@@ -560,6 +622,7 @@ function renderDenied(){
 // mount
 const app=document.getElementById('app');
 app.innerHTML = renderSystem(DATA.system, DATA.summary)
+  + renderCoverage()
   + renderTop5(DATA.top5)
   + renderPriority(DATA.summary)
   + renderGreen(DATA.green)

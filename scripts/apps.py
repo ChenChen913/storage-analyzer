@@ -27,6 +27,8 @@ import time
 import argparse
 import winreg
 
+import statefile
+
 from orphan import norm, ALIAS, INFRA, mtime2
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -105,12 +107,12 @@ def load_csv_tree(paths):
             print(f"CSV 不存在，跳过: {p}", file=sys.stderr)
             continue
         used += 1
-        with open(p, encoding="utf-8", errors="replace") as f:
+        with open(p, encoding="utf-8-sig", errors="replace") as f:
             for line in f:
                 i = line.rfind('",')
                 if i < 0:
                     continue
-                path = line[1:i]
+                path = line[1:i] if line.startswith('"') else line[:i].lstrip('"')
                 try:
                     sz = int(line[i + 2:].strip())
                 except ValueError:
@@ -267,18 +269,59 @@ def match(app_keys, data_keys):
     return any(key in data_keys for key in app_keys)
 
 
+STORE_DEFAULT = {"version": 1, "updated_at": "", "apps": {}}
+
+
+def normalize_store(store):
+    """旧版本/缺字段的登记表 -> 统一补齐，避免 KeyError 与前端渲染缺字段"""
+    if not isinstance(store, dict):
+        store = {}
+    for k, v in STORE_DEFAULT.items():
+        store.setdefault(k, v.copy() if isinstance(v, dict) else v)
+    if not isinstance(store.get("apps"), dict):
+        store["apps"] = {}
+    clean = {}
+    for key, ent in store["apps"].items():
+        if not isinstance(ent, dict):
+            ent = {}
+        ent.setdefault("name", key)
+        ent.setdefault("install_source", "")
+        ent.setdefault("install_paths", [])
+        ent.setdefault("data_paths", [])
+        ent.setdefault("size_bytes", 0)
+        ent.setdefault("last_active", "")
+        ent.setdefault("days_idle", -1)
+        ent.setdefault("installed", True)
+        ent.setdefault("reviewed", False)
+        ent.setdefault("note", "")
+        ent.setdefault("first_seen", "")
+        ent.setdefault("last_seen", "")
+        if not isinstance(ent["data_paths"], list):
+            ent["data_paths"] = []
+        if not isinstance(ent["size_bytes"], (int, float)):
+            ent["size_bytes"] = 0
+        clean[key] = ent
+    store["apps"] = clean
+    return store
+
+
 def load_store():
-    if os.path.exists(APPS_FILE):
-        with open(APPS_FILE, encoding="utf-8-sig") as f:
-            return json.load(f)
-    return {"version": 1, "updated_at": "", "apps": {}}
+    with statefile.locked(APPS_FILE):
+        return normalize_store(statefile.load_json(APPS_FILE, {}))
 
 
 def save_store(store):
-    os.makedirs(STATE_DIR, exist_ok=True)
-    store["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    with open(APPS_FILE, "w", encoding="utf-8") as f:
-        json.dump(store, f, ensure_ascii=False, indent=1)
+    with statefile.locked(APPS_FILE):
+        store["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        statefile.save_json(APPS_FILE, normalize_store(store))
+
+
+def store_locked(fn):
+    """build / mark 都是「读-改-写」，整体持锁防止并发覆盖"""
+    def wrapper(args):
+        with statefile.locked(APPS_FILE):
+            return fn(args)
+    return wrapper
 
 
 def resolve_csvs(arg_csv):
@@ -289,6 +332,7 @@ def resolve_csvs(arg_csv):
     return found or [os.path.join(temp, "scan_C.csv")]
 
 
+@store_locked
 def cmd_build(args):
     paths = resolve_csvs(args.csv)
     tree, used = load_csv_tree(paths)
@@ -370,6 +414,7 @@ def cmd_list(args):
             print(f"            {p}")
 
 
+@store_locked
 def cmd_mark(args):
     store = load_store()
     ent = store["apps"].get(args.key)

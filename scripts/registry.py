@@ -21,9 +21,10 @@ CSV 格式："路径",大小（Everything 导出，无表头）；溢出值 >= 2
 import os
 import sys
 import glob
-import json
 import time
 import argparse
+
+import statefile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_DIR = os.environ.get("STORAGE_ANALYZER_STATE") or os.path.join(HERE, "..", "state")
@@ -57,12 +58,12 @@ def load_csvs(paths):
 def load_csv(csv_path):
     """读 Everything CSV -> {目录: 直接文件字节}"""
     direct = {}
-    with open(csv_path, encoding="utf-8", errors="replace") as f:
+    with open(csv_path, encoding="utf-8-sig", errors="replace") as f:
         for line in f:
             i = line.rfind('",')
             if i < 0:
                 continue
-            p = line[1:i]
+            p = line[1:i] if line.startswith('"') else line[:i].lstrip('"')
             try:
                 sz = int(line[i + 2:].strip())
             except ValueError:
@@ -113,20 +114,58 @@ def mtime2(p, max_depth=2, cur=0):
     return latest
 
 
+REG_DEFAULT = {"version": 1, "updated_at": "", "last_diff_check": "", "dirs": {}}
+
+
+def normalize_reg(reg):
+    """旧版本/手工改坏的档案 -> 补齐缺省字段，保证后续 .get 安全"""
+    if not isinstance(reg, dict):
+        reg = {}
+    for k, v in REG_DEFAULT.items():
+        reg.setdefault(k, v.copy() if isinstance(v, dict) else v)
+    if not isinstance(reg.get("dirs"), dict):
+        reg["dirs"] = {}
+    clean = {}
+    for d, ent in reg["dirs"].items():
+        if not isinstance(ent, dict):
+            ent = {}
+        ent.setdefault("size", 0)
+        ent.setdefault("mtime", 0)
+        ent.setdefault("tier", None)
+        ent.setdefault("note", "")
+        ent.setdefault("first_seen", "")
+        ent.setdefault("last_seen", "")
+        ent.setdefault("deleted", False)
+        ent.setdefault("resurrected", 0)
+        if not isinstance(ent["size"], (int, float)):
+            ent["size"] = 0
+        clean[d] = ent
+    reg["dirs"] = clean
+    return reg
+
+
 def load_reg():
-    if os.path.exists(REG_FILE):
-        with open(REG_FILE, encoding="utf-8-sig") as f:
-            return json.load(f)
-    return {"version": 1, "updated_at": "", "dirs": {}}
+    """读档案：损坏文件会被隔离并回退到空档案，不再让整条分析链崩掉"""
+    with statefile.locked(REG_FILE):
+        return normalize_reg(statefile.load_json(REG_FILE, {}))
 
 
 def save_reg(reg):
-    os.makedirs(STATE_DIR, exist_ok=True)
-    reg["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    with open(REG_FILE, "w", encoding="utf-8") as f:
-        json.dump(reg, f, ensure_ascii=False, indent=1)
+    """原子写：先写临时文件再替换，避免中断/并发留下半截 JSON"""
+    with statefile.locked(REG_FILE):
+        reg["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        statefile.save_json(REG_FILE, normalize_reg(reg))
 
 
+def reg_locked(fn):
+    """给「读-改-写」命令整体加锁：两个 agent 同时跑 baseline 也不会互相覆盖"""
+    def wrapper(args):
+        with statefile.locked(REG_FILE):
+            return fn(args)
+    return wrapper
+
+
+@reg_locked
 def cmd_baseline(args):
     paths = resolve_csvs(args.csv)
     direct, n_csv = load_csvs(paths)
@@ -177,6 +216,7 @@ def cmd_baseline(args):
     print(f"档案目录 {len(reg['dirs'])} 个 | 新增 {n_new} | 标记删除 {n_gone}")
 
 
+@reg_locked
 def cmd_diff(args):
     paths = resolve_csvs(args.csv)
     direct, n_csv = load_csvs(paths)
@@ -238,15 +278,14 @@ def cmd_diff(args):
         "resurrected": [d for d, _ in res_items],
         "grew": [d for d, _, _ in grew_items],
     }
-    os.makedirs(STATE_DIR, exist_ok=True)
-    with open(DIFF_FILE, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=1)
+    statefile.save_json(DIFF_FILE, payload)
     reg["last_diff_check"] = now_str
     save_reg(reg)
     print(f"\n增量清单已写入: {DIFF_FILE}")
     print(f"读取 {n_csv} 个 CSV: " + ", ".join(os.path.basename(p) for p in paths if os.path.exists(p)))
 
 
+@reg_locked
 def cmd_mark(args):
     reg = load_reg()
     ent = reg["dirs"].get(args.path)
