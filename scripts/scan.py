@@ -296,16 +296,26 @@ def wiztree_export_csv(exe, drive, out_csv, timeout=1200):
     args = [exe, drive, "/export=" + raw,
             "/exportfolders=0", "/exportfiles=1", "/admin=0"]
     try:
+        os.remove(raw)  # 清掉上次崩溃遗留的导出文件，避免把旧数据当新结果
+    except OSError:
+        pass
+    try:
         _sp.run(args, capture_output=True, text=True, timeout=timeout)
     except Exception:
-        return False
-    if not os.path.exists(raw) or os.path.getsize(raw) == 0:
-        return False
-    try:
-        ok = normalize_wiztree_csv(raw, out_csv)
-    finally:
+        pass
+    ok = False
+    if os.path.exists(raw) and os.path.getsize(raw) > 0:
         try:
-            os.remove(raw)
+            ok = normalize_wiztree_csv(raw, out_csv)
+        finally:
+            try:
+                os.remove(raw)
+            except OSError:
+                pass
+    if not ok:
+        # 失败时不留半成品，否则 --reuse-csv 会把残缺清单当有效数据
+        try:
+            os.remove(out_csv)
         except OSError:
             pass
     return ok
