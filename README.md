@@ -1,8 +1,12 @@
 # Storage Analyzer
 
-Windows / macOS 只读存储分析 Skill。流程是：全盘扫描，三级分级，生成交互式 HTML 报告。扫描阶段只读，删除命令只展示，不自动执行。
+> **来源**：本仓库改造自 [KKKKhazix/khazix-skills](https://github.com/KKKKhazix/khazix-skills) 中的 `storage-analyzer`。上游是一个包含 6 个 skill 的合集，本仓库只改造并发布了其中一个，其余 skill 的版权归原作者所有。
+>
+> **完整 fork**：[ChenChen913/khazix-skills](https://github.com/ChenChen913/khazix-skills)，保留上游全部内容，用于记录血缘关系。
+>
+> 原项目采用 MIT 许可，原版权归 数字生命卡兹克；本仓库的改造部分归 ChenChen913。
 
-本仓库是改造版，基于 [KKKKhazix/khazix-skills](https://github.com/KKKKhazix/khazix-skills) 中的 `storage-analyzer`。上游项目包含多个 skill，本仓库只发布改造后的这一个，其余 skill 不在本仓库内。上游 fork 记录：[ChenChen913/khazix-skills](https://github.com/ChenChen913/khazix-skills)。
+Windows / macOS 只读存储分析 Skill。流程是：全盘扫描，三级分级，生成交互式 HTML 报告。扫描阶段只读，删除命令只展示，不自动执行。
 
 ## 相比上游的主要改动
 
