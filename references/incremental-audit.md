@@ -15,11 +15,12 @@
 
 ```bash
 # 1) 规则引擎：成组命中清理候选（plugins zip 组 / 多版本 bin / 崩溃转储 / 巨型日志）
-python scripts/rules.py --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv" > rules_hits.json
+python scripts/rules.py --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv" --out "%TEMP%\rules_hits.json"
 # 输出的 green_candidates / multi_version_groups 直接进分析流程，agent 只复核不定性枚举
 
 # 2) 卸载残留检测：数据目录存在但应用本体已不在（Programs/Program Files/WindowsApps/开始菜单/卸载注册表五重比对）
-python scripts/orphan.py --csv "%TEMP%\scan_C.csv" --min-mb 50 > orphans.json
+python scripts/orphan.py --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv" --min-mb 50 --out "%TEMP%\orphans.json"
+# 多盘必须全传；只传 C 盘会让 D 盘目录按 0 字节处理，导致漏报
 # 输出自动附最后活动时间与置信度（high/medium/low），days_idle 大的是高置信度弃用候选
 
 # 3) 应用登记表：枚举安装侧应用（Programs / Program Files / 注册表 InstallLocation）+ 用户侧数据目录，
@@ -48,7 +49,8 @@ python scripts/registry.py diff --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
 
 ## 多盘与常见误用
 
-- `--csv` 支持传多个文件，缺省会自动发现 `%TEMP%\scan_*.csv`。**不要只传 C 盘 CSV 就跑 baseline**，否则 D 盘目录会被误标成“已删除”。
+- `--csv` 支持传多个文件，缺省会自动发现 `%TEMP%\scan_*.csv`。**不要只传 C 盘 CSV 就跑 baseline**，否则 D 盘目录会被误标成“已删除”。`rules.py` 与 `orphan.py` 的 `--csv` 都接受多个值，多盘必须全传。
+- PowerShell 的 `>` 写出的 JSON 带 UTF-8 BOM，`json.load` 会直接报错。用 `--out` 让脚本自己写无 BOM 文件。
 - 没有跑 `diff` 就开始分析，视为流程违规。
 - 手工按文件名模式挑清理项属于流程违规——必须先用 `rules.py` 拿成组结果，agent 只做复核定性。实战教训：手工按文件名模式挑了少数压缩包，同目录同类文件整批漏网，下一轮成了“新发现”。
 - 脚本完整用法与设计说明见 `scripts/registry.py` / `rules.py` / `orphan.py` / `apps.py` 文件头注释。规则表可持续追加到 `scripts/rules.py` 的 RULES。

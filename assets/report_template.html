@@ -136,7 +136,7 @@
   .del-btn.open{background:#f2f3f5;color:var(--ink)}
   .del-btn.open:hover{background:#e5e6eb}
   .del-btn:disabled{opacity:.45;cursor:default}
-  .del-status{font-size:13px}
+  .del-status{font-size:13px;white-space:pre-line;word-break:break-all}
   .del-status.ok{color:var(--green);font-weight:600}
   .del-status.err{color:var(--red)}
   .del-note{font-size:12px;color:var(--sub);line-height:1.6;margin-top:8px}
@@ -376,6 +376,13 @@ function greenBatchActions(items){
   </span>`;
 }
 
+function failureLines(res, only){
+  const fails=(res.results||[]).filter(r=>!r.ok && (!only || only.includes(r.path)));
+  const lines=fails.slice(0,10).map(r=>`${r.path}：${r.error||r.status||'失败'}`);
+  if(fails.length>10) lines.push(`…另 ${fails.length-10} 条`);
+  return lines.join('\n');
+}
+
 function doBatch(btn, mode){
   const secActions = btn.closest('.sec-actions');
   const sec = btn.closest('.sec');
@@ -402,7 +409,7 @@ function doBatch(btn, mode){
       const paths = JSON.parse(decodeURIComponent(escape(atob(w.dataset.paths))));
       if(!paths.every(p=>done.has(p))){
         const ist=w.querySelector('.del-status');
-        if(ist){ ist.textContent='✗ 有路径未完成'; ist.className='del-status err'; }
+        if(ist){ ist.textContent='✗ 有路径未完成\n'+failureLines(res, paths); ist.className='del-status err'; }
         return;
       }
       okItems++;
@@ -418,7 +425,9 @@ function doBatch(btn, mode){
       status.className='del-status sec-status ok';
       secActions.querySelectorAll('.del-btn').forEach(b=>b.remove());
     } else {
-      status.textContent = `部分完成：成功 ${okItems} 项，失败 ${res.failed||0} 个路径`;
+      const detail = failureLines(res);
+      status.textContent = `部分完成：成功 ${okItems} 项，失败 ${res.failed||0} 个路径`
+        + (detail ? '\n' + detail : '');
       status.className='del-status sec-status err';
     }
   });
@@ -482,8 +491,9 @@ function doDelete(btn, mode){
       }
     } else {
       const left = paths.filter(p=>!done.has(p));
-      const firstErr = (res.results||[]).find(r=>!r.ok && r.error);
-      status.textContent = `部分失败（剩余 ${left.length} 个路径）` + (firstErr ? '：'+firstErr.error : '');
+      const detail = failureLines(res);
+      status.textContent = `部分失败（剩余 ${left.length} 个路径）`
+        + (detail ? '\n' + detail : '');
       status.className='del-status err';
       wrap.dataset.paths = btoa(unescape(encodeURIComponent(JSON.stringify(left))));
       const label = wrap.querySelector('.label');
@@ -599,6 +609,8 @@ function renderCoverage(){
   if(c.method) bits.push(`数据源 ${c.method}`);
   if(typeof c.files_scanned === 'number') bits.push(`文件 ${c.files_scanned.toLocaleString()}`);
   if(c.partial) bits.push('部分目录未读取');
+  if(c.limited) bits.push('覆盖受限');
+  if(c.suspect) bits.push('结果可疑');
   const drives = (c.drives_detail||[]).map(d=>{
     let s = `${d.drive} ${d.source||'失败'}`;
     if(d.reused) s += '，复用旧 CSV';
@@ -607,10 +619,12 @@ function renderCoverage(){
     return s;
   }).join('；');
   const fb = (c.fallback_reasons||[]).slice(0,5).join('；');
+  const caveats = (c.caveats||[]).slice(0,5).join('；');
   if(!bits.length && !drives && !fb) return '';
   let html = `<div class="coverage"><b>扫描可信度</b>：${esc(bits.join(' · '))}`;
   if(drives) html += `<br>${esc(drives)}`;
   if(fb) html += `<br>回退原因：${esc(fb)}`;
+  if(caveats) html += `<br>覆盖提示：${esc(caveats)}`;
   return html + '</div>';
 }
 

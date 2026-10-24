@@ -26,7 +26,11 @@ import sys
 import time
 import csv
 
+import statefile
+
 HOME = os.path.expanduser("~")
+STATE_DIR = os.environ.get("STORAGE_ANALYZER_STATE") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "state")
 
 
 def human(kb):
@@ -674,7 +678,8 @@ def scan_windows(opts):
                 "es_path": es, "wiztree_path": wz, "drives": drives,
                 "files_scanned": 0, "reused_csv": [],
                 "drives_detail": [], "fallback_reasons": [],
-                "denied_dirs": 0, "errors": [], "partial": False}
+                "denied_dirs": 0, "errors": [], "partial": False,
+                "caveats": [], "limited": False, "suspect": False}
     used = set()
     reused_drives = []
     for drive in drives:
@@ -744,6 +749,17 @@ def scan_windows(opts):
                 continue
             used.add(picked)
             detail["source"] = picked
+            if picked == "everything":
+                detail["caveats"] = ["导出行数已与索引计数比对；索引自身覆盖范围无法独立验证"]
+                coverage["caveats"].append(
+                    "%s Everything 索引覆盖范围无法独立验证" % drive)
+            elif picked == "wiztree" and not opts.get("wiztree_admin"):
+                detail["caveats"] = ["普通权限导出，WindowsApps 等受保护目录可能漏计"]
+                detail["limited"] = True
+                coverage["limited"] = True
+                coverage["partial"] = True
+                coverage["caveats"].append(
+                    "%s WizTree 普通权限导出，受保护目录可能漏计" % drive)
         res = combined_pass(csv_path, drive, min_dir_mb=min_dir_mb, big_mb=big_mb,
                             cache_mb=cache_mb, updater_mb=updater_mb,
                             ver_mb=ver_mb, top=top)
@@ -768,6 +784,20 @@ def scan_windows(opts):
         g["version_dirs"] = res["version_dirs"]
 
     coverage["reused_csv"] = reused_drives
+    # 文件数为 0 但磁盘明显已用：数据源多半没有真正覆盖，不能报 complete
+    used_bytes = 0
+    for drive in drives:
+        try:
+            used_bytes += shutil.disk_usage(drive).used
+        except OSError:
+            pass
+    if coverage["files_scanned"] == 0 and used_bytes > 0:
+        coverage["suspect"] = True
+        coverage["partial"] = True
+        coverage["caveats"].append(
+            "扫描未产出任何文件，但磁盘已用 %.1f GB；结果不可信，请检查数据源"
+            % (used_bytes / 2**30))
+    coverage["caveats"] = list(dict.fromkeys(coverage["caveats"]))
     coverage["errors"] = coverage["errors"][:30]
     coverage["complete"] = not coverage["partial"]
     coverage["method"] = "+".join(
@@ -908,7 +938,14 @@ def main():
             "wiztree_admin": args.wiztree_admin}
     if args.drives.strip():
         opts["drives"] = [d.strip() + ":\\" for d in args.drives.split(",") if d.strip()]
-    system, groups, coverage, artifacts = scan_windows(opts)
+    # 同一份 scan_<盘>.csv 同时被两个扫描写会互相截断；用状态目录的跨进程锁串行化。
+    try:
+        with statefile.locked(os.path.join(STATE_DIR, "scan"), timeout=1.0):
+            system, groups, coverage, artifacts = scan_windows(opts)
+    except TimeoutError:
+        print("另一个扫描正在进行（state/scan.lock 被占用），"
+              "请等它结束或关闭对应进程后重试。", file=sys.stderr)
+        sys.exit(2)
     hierarchy = {
         "drive_*": {"parent": None, "children": []},
         "recycle_bin": {"parent": None, "children": [], "note": "回收站，清空后释放空间"},

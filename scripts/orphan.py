@@ -9,9 +9,11 @@
 判定应用是否还在。数据在而本体找不到 -> 孤儿候选，附最后活动时间与置信度。
 
 用法：
-  python orphan.py [--min-mb 20] [--csv <CSV>]
---csv 提供 Everything 导出清单时走查表（秒级）；缺省时回退 os.walk 实测（慢）。
-输出 JSON 到 stdout。
+  python orphan.py [--min-mb 20] [--csv <CSV> ...] [--out <JSON>]
+--csv 可传多个文件（C、D 多盘时必须全传），提供时走查表（秒级）；
+缺省回退 os.walk 实测（慢）。
+--out 直接写 UTF-8 无 BOM 的 JSON 文件，避免 PowerShell 重定向产生 BOM。
+输出 JSON 到 stdout（未指定 --out 时）。
 """
 import os
 import re
@@ -20,7 +22,11 @@ import json
 import time
 import argparse
 import difflib
-import winreg
+
+try:
+    import winreg
+except ImportError:  # 非 Windows：模块仍可导入，注册表证据按“不可用”处理
+    winreg = None
 
 U = os.path.expanduser("~")
 LOCAL = os.path.join(U, "AppData", "Local")
@@ -142,6 +148,11 @@ def collect_installed_names():
         _source(sources, "Start Menu", "denied", lnk, "%d 个目录无法读取" % len(walk_errors))
     else:
         _source(sources, "Start Menu", "ok", lnk)
+
+    if winreg is None:
+        _source(sources, "WindowsApps", "denied", 0, "非 Windows 平台，无注册表证据")
+        _source(sources, "卸载注册表", "denied", 0, "非 Windows 平台，无注册表证据")
+        return names, sources
 
     # 4) WindowsApps（Store 应用）：包名形如 Publisher.App_版本_架构_哈希
     # 目录本身受 ACL 保护，普通权限 scandir 会 PermissionError，改从注册表
@@ -276,11 +287,24 @@ def load_csv_tree(csv_path):
 def main():
     ap = argparse.ArgumentParser(description="卸载残留检测器")
     ap.add_argument("--min-mb", type=float, default=20.0)
-    ap.add_argument("--csv", default=None, help="Everything CSV，提供则查表取大小（快）")
+    ap.add_argument("--csv", nargs="+", default=None,
+                    help="一个或多个 Everything CSV（多盘时要全传），提供则查表取大小（快）")
+    ap.add_argument("--out", default="",
+                    help="把 JSON 写入文件（UTF-8 无 BOM），避免 PowerShell 重定向产生 BOM")
     args = ap.parse_args()
     min_b = int(args.min_mb * 2**20)
 
-    csv_tree = load_csv_tree(args.csv) if args.csv and os.path.exists(args.csv) else None
+    csv_tree = None
+    for cp in args.csv or []:
+        if not os.path.exists(cp):
+            print("CSV 不存在，跳过: %s" % cp, file=sys.stderr)
+            continue
+        t = load_csv_tree(cp)
+        if csv_tree is None:
+            csv_tree = t
+        else:
+            for d, sz in t.items():
+                csv_tree[d] = csv_tree.get(d, 0) + sz
     installed, sources = collect_installed_names()
     incomplete = [s["source"] for s in sources if s["status"] in ("denied", "partial")]
 
@@ -356,7 +380,7 @@ def main():
         })
 
     orphans.sort(key=lambda x: -x["size_bytes"])
-    print(json.dumps({
+    blob = json.dumps({
         "installed_names_count": len(installed),
         "install_evidence": {
             "sources": sources,
@@ -369,7 +393,13 @@ def main():
             "high_confidence": sum(1 for o in orphans if o["confidence"] == "high"),
             "incomplete_install_evidence": bool(incomplete),
         },
-    }, ensure_ascii=False, indent=1))
+    }, ensure_ascii=False, indent=1)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(blob)
+        print("orphans written to %s" % args.out, file=sys.stderr)
+    else:
+        print(blob)
 
 
 if __name__ == "__main__":

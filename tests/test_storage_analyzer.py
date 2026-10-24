@@ -5,9 +5,10 @@
   python -m unittest discover -s tests -v
 
 测试只使用临时目录，不读写仓库里的 state/，不改动用户文件。
-唯一例外是 Windows 回收站真实删除测试：会在回收站留下
-sa_recycle_test_*、测试 缓存 *、empty_dir_*、nonempty dir *、readonly_*
-等小测试项，用于验证“移到回收站”真的生效。
+Windows 回收站真实删除测试默认跳过（避免污染用户回收站），需要验证时运行：
+  set SA_REAL_RECYCLE=1 && python -m unittest discover -s tests -v
+该项会在回收站留下 sa_recycle_test_*、测试 缓存 *、empty_dir_*、
+nonempty dir *、readonly_* 等小测试项。
 """
 import http.client
 import io
@@ -324,7 +325,7 @@ class ServerHttpTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.saved = (server.DATA, server.TPL, server.RM_ALLOW, server.TRASH_ALLOW,
                       server.OPEN_ALLOW, server.ALLOW_RM, server.STATE_DIR,
-                      server.AUDIT_FILE)
+                      server.AUDIT_FILE, server.ROOTS)
         server.DATA = {"green": [], "yellow": [], "red": []}
         server.TPL = '<html>__REPORT_DATA__|__DELETE_CONFIG__</html>'
         server.RM_ALLOW = set()
@@ -333,11 +334,13 @@ class ServerHttpTests(unittest.TestCase):
         server.ALLOW_RM = False
         server.STATE_DIR = self.tmp
         server.AUDIT_FILE = os.path.join(self.tmp, "audit.jsonl")
+        # 测试沙箱在 %TEMP% 下（Windows 属于 HOME，Linux 不属于），统一把根设为沙箱
+        server.ROOTS = [os.path.realpath(self.tmp)]
 
     def tearDown(self):
         (server.DATA, server.TPL, server.RM_ALLOW, server.TRASH_ALLOW,
          server.OPEN_ALLOW, server.ALLOW_RM, server.STATE_DIR,
-         server.AUDIT_FILE) = self.saved
+         server.AUDIT_FILE, server.ROOTS) = self.saved
 
     def post(self, payload, host=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
@@ -414,7 +417,88 @@ class ServerHttpTests(unittest.TestCase):
         self.assertEqual(code, 403)
         self.assertTrue(os.path.exists(p))
 
+    def test_missing_token_rejected(self):
+        p = self.make_file()
+        server.TRASH_ALLOW = {os.path.realpath(p)}
+        code, data = self.post({"mode": "trash", "paths": [p]})
+        self.assertEqual(code, 403)
+        self.assertIn("token", data["error"])
+        self.assertTrue(os.path.exists(p))
+
+    def test_unknown_mode_rejected(self):
+        p = self.make_file()
+        code, data = self.post({"token": server.TOKEN, "mode": "delete", "paths": [p]})
+        self.assertEqual(code, 400)
+        self.assertIn("未知操作", data["error"])
+        self.assertTrue(os.path.exists(p))
+
+    def test_get_action_not_allowed(self):
+        p = self.make_file()
+        server.RM_ALLOW = {os.path.realpath(p)}
+        server.ALLOW_RM = True
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", "/action")
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 404)
+        self.assertTrue(os.path.exists(p), "GET 不得触发任何删除")
+
+    def test_dotdot_traversal_rejected(self):
+        allowed = os.path.join(self.tmp, "allowed")
+        os.makedirs(allowed)
+        secret = os.path.join(self.tmp, "secret.txt")
+        with open(secret, "w", encoding="utf-8") as f:
+            f.write("keep")
+        server.RM_ALLOW = {os.path.realpath(allowed)}
+        server.ALLOW_RM = True
+        payload = os.path.join(allowed, "..", "secret.txt")
+        code, data = self.post({"token": server.TOKEN, "mode": "rm", "paths": [payload]})
+        self.assertEqual(code, 403)
+        self.assertTrue(os.path.exists(secret))
+
+    def test_trash_failure_and_cancel_reported(self):
+        original = server.move_to_trash
+        self.addCleanup(setattr, server, "move_to_trash", original)
+        for index, msg in enumerate(("SHFileOperation failed (code 5)",
+                                     "回收站操作被系统取消")):
+            with self.subTest(msg=msg):
+                p = self.make_file("fail_%d_%d.bin" % (os.getpid(), index))
+                server.TRASH_ALLOW = {os.path.realpath(p)}
+
+                def boom(path, _msg=msg):
+                    raise OSError(_msg)
+
+                server.move_to_trash = boom
+                code, data = self.post({"token": server.TOKEN, "mode": "trash",
+                                        "paths": [p]})
+                self.assertEqual(code, 200, data)
+                self.assertFalse(data["ok"])
+                self.assertEqual(data["failed"], 1)
+                self.assertIn(msg, data["results"][0]["error"])
+                self.assertTrue(os.path.exists(p), "回收站失败不得降级为永久删除")
+
+    def test_batch_audit_summary_fields(self):
+        p1 = self.make_file("batch_a.bin")
+        p2 = self.make_file("batch_b.bin")
+        server.RM_ALLOW = {os.path.realpath(p1), os.path.realpath(p2)}
+        server.ALLOW_RM = True
+        code, data = self.post({"token": server.TOKEN, "mode": "rm",
+                                "paths": [p1, p2]})
+        self.assertEqual(code, 200, data)
+        with open(server.AUDIT_FILE, encoding="utf-8") as f:
+            lines = [json.loads(x) for x in f if x.strip()]
+        batch = [x for x in lines if x.get("action") == "batch"]
+        self.assertEqual(len(batch), 1, lines)
+        self.assertEqual(batch[0]["count"], 2)
+        self.assertEqual(batch[0]["ok_count"], 2)
+        self.assertEqual(batch[0]["failed"], 0)
+        self.assertEqual(batch[0]["risk"], "high")
+        self.assertEqual(batch[0]["mode"], "rm")
+
     @unittest.skipUnless(sys.platform.startswith("win"), "回收站仅 Windows")
+    @unittest.skipUnless(os.environ.get("SA_REAL_RECYCLE") == "1",
+                         "真实回收站测试会污染用户回收站；设 SA_REAL_RECYCLE=1 才执行")
     def test_real_recycle_bin_mixed_batch(self):
         """真实回收站：普通文件、中文+空格、空目录、非空目录、只读文件、批量。"""
         plain = self.make_file("sa_recycle_test_%d.txt" % os.getpid())
@@ -491,6 +575,58 @@ class ScanTests(unittest.TestCase):
             self.assertIn(key, coverage)
         self.assertEqual(coverage["drives_detail"][0]["source"], "walk")
         self.assertIn("drive_C", groups)
+
+    def _patch_scan(self, **overrides):
+        names = ("find_es", "find_wiztree", "list_drives_windows",
+                 "system_info_windows", "dir_size_bytes", "running_apps",
+                 "walk_export_csv", "wiztree_export_csv")
+        originals = {n: getattr(scan, n) for n in names}
+        for n, fn in overrides.items():
+            setattr(scan, n, fn)
+        for n, fn in originals.items():
+            self.addCleanup(setattr, scan, n, fn)
+        scan.list_drives_windows = lambda: [{"name": "C:\\"}]
+        scan.system_info_windows = lambda: {"os": "Windows-test", "disks": []}
+        scan.dir_size_bytes = lambda p: 0
+        scan.running_apps = lambda: []
+        scan.find_es = lambda: None
+
+    def test_wiztree_without_admin_records_caveat(self):
+        def fake_wiz(wz, drive, out, admin=False):
+            scan.walk_export_csv(self.sandbox, out)
+            return True
+
+        self._patch_scan(find_wiztree=lambda: "wiztree64.exe",
+                         wiztree_export_csv=fake_wiz)
+        _sys, _groups, coverage, _artifacts = scan.scan_windows({
+            "source": "wiztree", "drives": ["C:\\"], "tmpdir": self.tmp,
+            "min_dir_mb": 1, "big_mb": 1, "cache_mb": 1, "updater_mb": 1,
+            "ver_mb": 1, "top": 10,
+        })
+        self.assertEqual(coverage["method"], "wiztree")
+        self.assertTrue(coverage["limited"])
+        self.assertTrue(coverage["partial"])
+        self.assertFalse(coverage["complete"])
+        self.assertTrue(any("WizTree" in c for c in coverage["caveats"]))
+        self.assertTrue(coverage["drives_detail"][0]["limited"])
+        self.assertTrue(coverage["drives_detail"][0]["caveats"])
+
+    def test_zero_files_with_used_disk_is_suspect(self):
+        self._patch_scan(
+            walk_export_csv=lambda drive, out: {"files": 0, "denied": 0, "errors": []})
+        original_disk = scan.shutil.disk_usage
+        self.addCleanup(setattr, scan.shutil, "disk_usage", original_disk)
+        scan.shutil.disk_usage = lambda p: type("U", (), {"used": 10 * 2**30})()
+        _sys, _groups, coverage, _artifacts = scan.scan_windows({
+            "source": "walk", "drives": ["C:\\"], "tmpdir": self.tmp,
+            "min_dir_mb": 1, "big_mb": 1, "cache_mb": 1, "updater_mb": 1,
+            "ver_mb": 1, "top": 10,
+        })
+        self.assertTrue(coverage["suspect"])
+        self.assertTrue(coverage["partial"])
+        self.assertFalse(coverage["complete"])
+        self.assertEqual(coverage["files_scanned"], 0)
+        self.assertTrue(any("不可信" in c for c in coverage["caveats"]))
 
 
 if __name__ == "__main__":

@@ -70,19 +70,27 @@ python scripts/scan.py --out "%TEMP%\storage_scan.json"
 python3 scripts/scan.py > /tmp/storage_scan.json
 ```
 
-必须确认输出里有 `coverage`（`method` = everything / wiztree / walk，混用形如 `everything+walk`；含 `es_path` / `wiztree_path` / `drives` / `files_scanned`）。全盘清单 + 大文件 TopN 是“不遗漏”的最低保障，只基于固定目标列表的分析视为不完整。
+必须确认输出里有 `coverage`（`method` = everything / wiztree / walk，混用形如 `everything+walk`；含 `es_path` / `wiztree_path` / `drives` / `files_scanned` / `partial` / `complete` / `caveats` / `limited` / `suspect`）。以下三种情况必须在对话摘要里如实说明，不得宣称“全盘完整覆盖”：
+
+- `caveats` 非空：说明数据源有已知盲区（Everything 索引无法独立验证、WizTree 普通权限漏受保护目录）。
+- `partial=true` 或 `limited=true`：说明有目录未读取或覆盖受限，给出重扫建议（提权 `--wiztree-admin` 或装 Everything）。
+- `suspect=true`：文件数为 0 但磁盘已用，结果不可信，必须换数据源重扫，不得据此生成清理建议。
+
+全盘清单 + 大文件 TopN 是“不遗漏”的最低保障，只基于固定目标列表的分析视为不完整。
 
 指定盘 / 调整阈值 / 强制数据源 / 并行 drilldown / git-bash 后台失败时的 `execute_code` 兜底，见 [scan-workflow.md](references/scan-workflow.md)。扫描耗时：Everything 约 18 秒/盘，walk 数分钟到数十分钟。
 
 ### Step 1.5 增量审计（v3，每轮必跑，仅 Windows）
 
 ```bash
-python scripts/rules.py --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv" > rules_hits.json
-python scripts/orphan.py --csv "%TEMP%\scan_C.csv" --min-mb 50 > orphans.json
+python scripts/rules.py --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv" --out "%TEMP%\rules_hits.json"
+python scripts/orphan.py --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv" --min-mb 50 --out "%TEMP%\orphans.json"
 python scripts/apps.py build --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
 python scripts/apps.py list --unreviewed --min-mb 20
 python scripts/registry.py diff --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
 ```
+
+- **不要用 PowerShell 的 `>` 重定向 JSON。** 它会写出 UTF-8 BOM，后续 `json.load` 直接报错。`scan.py` / `rules.py` / `orphan.py` 一律用 `--out`。
 
 - **分析顺序**：未审查应用清单 > diff 增量 > orphans > rules 命中组 > 全量 TopN 兜底。
 - 每个定性目录立刻 `registry.py mark <路径> <green|yellow|red|keep> "<理由>"`；每个看完的应用立刻 `apps.py mark <key> --note "<结论>"`。
@@ -146,11 +154,32 @@ python3 scripts/server.py /tmp/storage_analysis.json       # macOS
 - 删除后告知实际释放量；保留则告知位置、总体量和下次删除时机。
 - macOS 只有调用方保存的 scan JSON（如 `/tmp/storage_scan.json`），同理在本轮结束后询问。
 
+## 输出契约与异常处理
+
+脚本对 Agent 的输出约定（排障先看这里）：
+
+| 场景 | 表现 | 处理 |
+|------|------|------|
+| `scan.py` 正常 | stdout 或 `--out` 的 JSON，`coverage.complete=true` | 进入 Step 1.5 |
+| 覆盖受限 | `coverage.partial` / `limited=true` + `caveats` | 摘要如实说明，建议提权重扫或换 Everything |
+| 结果可疑 | `coverage.suspect=true`，文件数为 0 | 换数据源重扫，禁止据此出清理建议 |
+| 已有扫描在跑 | stderr 提示 `state/scan.lock` 被占用，退出码 2 | 等前一个扫描结束，不要并行硬跑 |
+| Everything 失败 | `fallback_reasons` 有记录，自动降级 WizTree / walk | 向用户说明原因，不得静默忽略 |
+| 某盘全部数据源失败 | `drives_detail[].status=failed`，`partial=true` | 报告里标注该盘未扫描，不得当作 0 字节 |
+| `rules.py` / `orphan.py` 缺 CSV | stderr 提示“CSV 不存在，跳过” | 检查路径；orphan 多盘必须全传 |
+| `server.py` 403 | token / Host / 白名单 / 越界 / 敏感目录 / 未开 `--allow-rm` | 不要绕过；按提示由用户确认后重启服务 |
+| `server.py` 400 | 未知 mode、paths 非法 | 修正 analysis JSON 后重启 |
+| 回收站失败 | 200 + `ok=false` + 逐项 `error` | 文件保持原样，如实报告；绝不降级为 rm |
+
+- `audit.jsonl` 每行一条 JSON；每个动作逐项记录，批量结束再追加一条 `action=batch` 汇总（`count` / `ok_count` / `failed` / `risk`）。追加写持跨进程锁，多标签并发不会写坏。
+- 报告的“扫描可信度”区块直接来自 `coverage`；只有 `caveats` 为空且 `complete=true` 才可以在摘要里说“完整覆盖”。
+
 ## 依赖与运行前提
 
 - 全部脚本是 **Python 3 标准库**，零第三方依赖（不用 pip install）。
 - **Windows**：默认没装 Python，需先安装 Python 3；命令用 `python` 或 `py -3`（不是 `python3`）。**macOS**：自带 `python3`、`du`、`diskutil`、`osascript`，开箱即用。
 - 本 skill 是 **agent 驱动**：扫描出数据后由 agent 做分级分析，不是双击即用的独立 App。
+- 自测：`python -m unittest discover -s tests -v`。真实回收站用例默认跳过（避免污染用户回收站），只有设置 `SA_REAL_RECYCLE=1` 才执行。
 
 ## 平台状态
 

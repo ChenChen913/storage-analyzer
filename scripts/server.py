@@ -40,6 +40,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from report_util import json_for_script
+import statefile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, "..", "assets", "report_template.html")
@@ -144,14 +145,18 @@ def validate_target(rp, allow, mode, roots=None):
 
 
 def audit(entry):
-    """追加一条操作记录；审计失败不影响主流程，但会打印到 stderr。"""
+    """追加一条操作记录；审计失败不影响主流程，但会打印到 stderr。
+
+    多个浏览器标签可能并发提交，追加写必须持锁，否则 jsonl 会出现半行。
+    """
     entry = dict(entry)
     entry["ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
-        with open(AUDIT_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except OSError as e:
+        with statefile.locked(AUDIT_FILE):
+            with open(AUDIT_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except (OSError, TimeoutError) as e:
         print("审计日志写入失败：%s" % e, file=sys.stderr)
 
 
@@ -384,6 +389,12 @@ class Handler(BaseHTTPRequestHandler):
                        "status": "failed", "error": str(e)})
 
         failed = [r for r in results if not r["ok"]]
+        # 批量汇总单独记一条，便于聊天记录之外的复盘：谁在什么时候动了多少路径
+        audit({"mode": mode, "action": "batch",
+               "risk": {"rm": "high", "trash": "medium", "open": "none"}[mode],
+               "count": len(results), "ok_count": len(results) - len(failed),
+               "failed": len(failed),
+               "failed_paths": [r["path"] for r in failed]})
         self._send(200, json.dumps({
             "ok": not failed,
             "done": [r["path"] for r in results if r["ok"]],

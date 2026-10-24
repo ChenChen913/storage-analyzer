@@ -4,6 +4,24 @@
 
 本轮不处理项单独列在最后一节，写明理由。
 
+## 第二轮：报告 02 复核后的遗留问题
+
+- [x] R1 测试隔离：真实回收站用例改为 `SA_REAL_RECYCLE=1` 才执行，默认跳过，避免污染用户回收站
+- [x] R2 回收站异常测试：用 mock 覆盖 SHFileOperation 返回失败/取消，确认失败不降级、逐项报错
+- [x] R3 HTTP 负向测试：补缺 token、非法 mode、非法方法、显式 `..` 穿越、非白名单路径
+- [x] R4 审计加固：追加写加锁；补批量总数、成功数、失败数与动作类型
+- [x] R5 Everything 覆盖声明：coverage 增加索引覆盖无法独立验证的提示；文件数为 0 但磁盘已用时标 suspect/partial；WizTree 普通权限判 partial/limited
+- [x] R6 并发扫描隔离：扫描入口使用 `state/scan.lock` 跨进程锁，避免两个扫描互相覆盖 CSV
+- [x] R7 CI：新增 GitHub Actions，Ubuntu + Windows 跑编译检查与默认测试
+- [x] R8 版本与变更记录：新增 CHANGELOG，推送后打 `v0.2.0` 标签
+- [x] R9 文档补齐：README 增加 FAQ、测试隔离与 Everything 覆盖限制；SKILL 增加输出契约与异常处理章节
+- [x] R10 前端逐项失败展示：批量与单项操作显示每条失败路径与原因，不只显示首个错误
+- [x] R11 完整调用一次 skill：两盘扫描 4,132,781 文件（Everything 失败 → WizTree 降级，coverage 正确标 `partial` / `limited`）→ rules（3 绿组、247 需确认）→ orphan（47 项、高置信 11）→ apps（217 应用）→ registry（110 个新目录）→ 报告页 7 个区块正常、无 JS 报错；未启用 `--allow-rm` 时页面无“直接删除”；沙箱项真实移入回收站并写入 `action=batch` 审计
+- [x] R12 自查与测试：35 项测试通过（1 项真实回收站按需跳过），`py_compile` 全部通过，Markdown 文档无本机路径 / 用户名等个人数据
+- [ ] R13 推送 GitHub：核对远端 blob 哈希，确认不含 state 与个人数据
+- [x] R14 JSON `--out`：`rules.py` / `orphan.py` 增加 `--out` 直接写 UTF-8 无 BOM 文件
+- [x] R15 orphan 多 CSV：`--csv` 改为 `nargs="+"` 并合并多盘树，与文档一致
+
 ## A 安全
 
 - [x] A1 永久删除默认关闭：`server.py` 增加 `--allow-rm`，未显式开启时拒绝 `rm`，网页隐藏“直接删除”按钮
@@ -50,7 +68,7 @@
 
 ## E7 自查结论
 
-测试证据：`python -m unittest discover -s tests -v`，27 项全部通过（Windows 本机真实执行，含真实回收站批量删除）。
+测试证据：`python -m unittest discover -s tests -v`，35 项通过、1 项按需跳过（Windows 真实执行；真实回收站用例需 `SA_REAL_RECYCLE=1`，默认跳过以免污染回收站）。
 
 | 审查报告条目 | 自查结果 |
 |--------------|----------|
@@ -74,8 +92,6 @@
 |------|------|
 | 拆分 `scan.py` | 无自动化测试前大重构风险高于收益，先补测试与契约 |
 | 全量 JSON Schema / 强类型 | 现有测试已覆盖关键契约，引入 schema 库违背“纯标准库”约束 |
-| GitHub Actions CI | 无法在本地验证 Windows runner 上回收站 API 的行为，避免提交必然红或靠跳过关键用例变绿的 CI |
 | README 长文迁移到 `docs/` | 属于结构调整，不影响安全与功能，等文档整体改版时再做 |
-| tag / release / CHANGELOG | 需要先确定版本策略，本轮只做修复 |
 | 改写 git 历史去除脱敏前数据 | 破坏性操作，需用户单独授权 |
 | `orphan.py` 扫描其他盘便携应用 | 候选泛化会显著增加误报，先保留用户目录范围并在文档标注 |

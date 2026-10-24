@@ -149,6 +149,7 @@ Step 5   收尾           处理扫描中间产物，询问用户删除时机
 - 需要主程序常驻，索引数百万文件时约几百 MB 内存，内存紧张的机器要权衡。
 - 主程序没运行时不可用。
 - 首次安装需要花时间建索引。
+- 索引本身是否完整覆盖全盘，本工具无法独立验证。扫描只能把导出行数与 Everything 自己的 `-get-result-count` 比对；若索引被排除规则裁剪或索引过期，行数校验通过也可能偏少。报告页会在 `coverage.caveats` 里明确写出这一点。
 
 ### WizTree
 
@@ -204,12 +205,14 @@ Windows 另需安装 Python 3，并勾选「Add Python to PATH」。
 ```powershell
 # Windows
 python scripts\scan.py --out "%TEMP%\storage_scan.json"
-python scripts\rules.py --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
-python scripts\orphan.py --csv "%TEMP%\scan_C.csv" --min-mb 50
+python scripts\rules.py --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv" --out "%TEMP%\rules_hits.json"
+python scripts\orphan.py --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv" --min-mb 50 --out "%TEMP%\orphans.json"
 python scripts\apps.py build --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
 python scripts\registry.py diff --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
 python scripts\server.py "%TEMP%\storage_analysis.json"
 ```
+
+> PowerShell 的 `>` 会写出带 BOM 的 UTF-8，随后的 `json.load` 会报 `Unexpected UTF-8 BOM`。`scan.py`、`rules.py`、`orphan.py` 都支持 `--out` 直接写无 BOM 的 UTF-8 文件，优先用它而不是 `>`。
 
 ```bash
 # macOS（功能子集，无 CSV 与增量审计）
@@ -255,10 +258,21 @@ python -m unittest discover -s tests -v
 | `</script>` 注入转义、前端单引号转义 | 自动化测试覆盖 |
 | 状态文件原子写、损坏隔离、并发锁 | 自动化测试覆盖，含 3 进程并发读改写 |
 | `rules.py` 分组与版本排序、`orphan.py` 证据链 | 自动化测试覆盖 |
-| `scan.py` 临时沙箱扫描与 `coverage` 契约 | 自动化测试覆盖 |
-| 本地 HTTP 服务集成（token / Host / 越权） | 自动化测试覆盖 |
+| `scan.py` 临时沙箱扫描与 `coverage` 契约 | 自动化测试覆盖，含 WizTree 普通权限降级为 partial、0 文件时判 suspect |
+| 本地 HTTP 服务集成（token / Host / 越权） | 自动化测试覆盖，含缺 token、非法 mode、GET /action、`..` 穿越、非白名单、回收站失败不降级 |
+| 批量审计汇总 | 自动化测试覆盖（总数 / 成功数 / 失败数 / 风险等级） |
+| 回收站操作失败与取消 | 自动化测试用 mock 覆盖，验证逐项报错且不降级为永久删除 |
 
-当前共 27 项测试，`python -m unittest discover -s tests -v` 全部通过。测试在本机 Windows 上真实执行，包含一次真实的回收站批量删除；非 Windows 平台会跳过回收站相关用例。
+当前共 35 项测试，`python -m unittest discover -s tests -v` 全部通过（1 项真实回收站用例默认跳过）。
+
+真实回收站用例会往你的回收站里写入测试项，因此默认不执行。需要验证时显式开启：
+
+```powershell
+$env:SA_REAL_RECYCLE = "1"
+python -m unittest tests.test_storage_analyzer.ServerHttpTests.test_real_recycle_bin_mixed_batch -v
+```
+
+非 Windows 平台会自动跳过回收站相关用例；CI 上也从不设置该变量。
 
 ## 目录结构
 
@@ -301,8 +315,37 @@ state/                            本地运行档案，已 gitignore
 | Windows 回收站删除 | 已实测普通文件、中文与空格文件名、空目录、非空目录、只读文件、批量操作与逐项结果校验；未实测用户取消、文件被占用、超长路径、网络盘 |
 | TOCTOU 竞态 | 校验与执行之间的极短窗口无法完全消除，见「安全模型」 |
 | 扫描与实占差额 | 系统还原点、NTFS 元数据、ACL 受限目录读不到，这部分差额删文件也回收不了 |
+| Everything 索引覆盖 | 只能校验导出行数与索引计数一致，索引自身是否完整无法独立验证；`coverage.caveats` 会写明 |
+| WizTree 普通权限覆盖 | 受保护目录可能漏计，此时 `coverage.partial=true`、`limited=true`，不再宣称完整覆盖 |
+| 扫描并发 | 同一台机器的两个 `scan.py` 通过 `state/scan.lock` 串行化，第二个在 1 秒内拿不到锁会退出码 2 |
 | 分析一致性 | 依赖 Agent 判断，同一盘不同轮次结论可能不同 |
 | 大目录耗时 | `walk` 模式百万文件级需数十分钟 |
+
+## 常见问题（FAQ）
+
+**报告页显示「覆盖受限 / 部分目录未读取」，还能信吗？**
+说明数据源没有完整覆盖。WizTree 普通权限导出拿不到 `WindowsApps`、Defender 定义库等受保护目录，此时扫描会主动把 `coverage.partial` 标为真，并在报告页写出覆盖提示。要完整统计，请在提权终端加 `--wiztree-admin` 重扫，或改用 Everything。
+
+**扫描结果文件数是 0，但磁盘明明装满了？**
+扫描会比对「文件数为 0」与「磁盘已用」，二者矛盾时标记 `coverage.suspect=true`、`partial=true`，报告会显示「结果可疑」。常见原因是数据源工具未启动、权限不足或导出文件被清空，请按 `fallback_reasons` 排查后重扫，不要基于这种结果做清理决策。
+
+**PowerShell 生成 JSON 后读取报 `Unexpected UTF-8 BOM`？**
+PowerShell 的 `>` 会写带 BOM 的 UTF-8。改用 `scan.py --out`、`rules.py --out`、`orphan.py --out` 直接写文件；已有文件可用 `encoding="utf-8-sig"` 读取。
+
+**网页上为什么没有「移到回收站 / 直接删除」按钮？**
+对应项没有 `trash_paths`，或路径不在允许根目录内（默认只有 `%USERPROFILE%` 与 `Program Files`）。跨盘路径需要启动时加 `--allow-root "D:\"`。「直接删除」还需要显式 `--allow-rm`。
+
+**回收站删除失败时，会不会静默降级成永久删除？**
+不会。`SHFileOperationW` 返回非零或 `fAnyOperationsAborted` 为真时直接抛错，服务端按路径返回失败原因，源文件保持原样。批量操作不会因为个别失败而继续误删其他路径。
+
+**同时跑两个 `scan.py` 会互相覆盖 CSV 吗？**
+不会。扫描入口持有 `state/scan.lock` 跨进程锁，第二个进程 1 秒内拿不到锁会直接退出并提示，避免两个任务同时写同一份 `scan_<盘符>.csv`。
+
+**`orphan.py` 只传 C 盘 CSV 会怎样？**
+其他盘的数据目录查不到大小，会被按 0 字节处理，可能整体漏报。多盘环境必须把所有盘的 CSV 都传给 `--csv`。
+
+**为什么真实回收站测试默认跳过？**
+它会在你的回收站里留下测试项。默认只跑 mock 用例；需要真实验证时设 `SA_REAL_RECYCLE=1`，跑完自行清空回收站。
 
 ## 扫描临时文件
 

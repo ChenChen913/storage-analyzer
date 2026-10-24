@@ -106,6 +106,8 @@ def main():
     ap.add_argument("--csv", nargs="+", default=None,
                     help="一个或多个 Everything CSV；缺省自动发现 %%TEMP%%\\scan_*.csv")
     ap.add_argument("--min-mb", type=float, default=1.0)
+    ap.add_argument("--out", default="",
+                    help="把 JSON 写入文件（UTF-8 无 BOM），避免 PowerShell 重定向产生 BOM")
     args = ap.parse_args()
     min_b = int(args.min_mb * 2**20)
 
@@ -246,7 +248,13 @@ def main():
             "cache_family_bytes": sum(c["size_bytes"] for c in cache_families),
         },
     }
-    print(json.dumps(result, ensure_ascii=False, indent=1))
+    blob = json.dumps(result, ensure_ascii=False, indent=1)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(blob)
+        print("rules written to %s" % args.out, file=sys.stderr)
+    else:
+        print(blob)
 
 
 if __name__ == "__main__":
