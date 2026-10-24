@@ -16,7 +16,7 @@
 - [x] R8 版本与变更记录：新增 CHANGELOG，推送后打 `v0.2.0` 标签
 - [x] R9 文档补齐：README 增加 FAQ、测试隔离与 Everything 覆盖限制；SKILL 增加输出契约与异常处理章节
 - [x] R10 前端逐项失败展示：批量与单项操作显示每条失败路径与原因，不只显示首个错误
-- [x] R11 完整调用一次 skill：两盘扫描 4,132,781 文件（Everything 失败 → WizTree 降级，coverage 正确标 `partial` / `limited`）→ rules（3 绿组、247 需确认）→ orphan（47 项、高置信 11）→ apps（217 应用）→ registry（110 个新目录）→ 报告页 7 个区块正常、无 JS 报错；未启用 `--allow-rm` 时页面无“直接删除”；沙箱项真实移入回收站并写入 `action=batch` 审计
+- [x] R11 完整调用一次 skill：全盘扫描（百万级文件，Everything 失败 → WizTree 降级，coverage 正确标 `partial` / `limited`）→ rules / orphan / apps / registry 全部跑通 → 报告页各区块正常、无 JS 报错；未启用 `--allow-rm` 时页面无“直接删除”；沙箱项真实移入回收站并写入 `action=batch` 审计
 - [x] R12 自查与测试：35 项测试通过（1 项真实回收站按需跳过），`py_compile` 全部通过，Markdown 文档无本机路径 / 用户名等个人数据
 - [x] R13 推送 GitHub：12 个新增/修改文件经 Git Data API 上传，远端 blob 哈希与本地逐一一致；仓库中不含 `state/`、临时 CSV 与个人数据；已打 `v0.2.0` 标签
 - [x] R14 JSON `--out`：`rules.py` / `orphan.py` 增加 `--out` 直接写 UTF-8 无 BOM 文件
@@ -32,7 +32,7 @@
 - [x] R21 回归测试：新增盘符根、目标扩张、根外链接、链接只删自身、悬空链接、load 白名单来源共 6 项，41 项测试通过
 - [x] R22 文档与版本：README 路径护栏与测试矩阵、SKILL 安全模型、CHANGELOG 0.2.1
 - [x] R23 全量测试与自查：41 项测试通过（2 项按需跳过）、`py_compile` 通过、文档隐私复查并替换一处示例 bundle id
-- [x] R24 完整调用一次 skill：两盘扫描 413 万文件（WizTree、coverage 标 partial/limited）→ rules（3 绿组、247 需确认）→ orphan（47 项、高置信 11）→ apps（217 应用）→ registry（113 个新目录）→ 报告页 7 个区块正常、无 JS 报错、无可见“直接删除”；浏览器点击自检沙箱后真实进入回收站，审计写入 `action=batch`；`--allow-root "D:\"` 下 `D:\Cache` 放行、`D:\Cache2` 仍拒绝
+- [x] R24 完整调用一次 skill：全盘扫描（百万级文件，WizTree、coverage 标 partial/limited）→ rules / orphan / apps / registry 全部跑通 → 报告页各区块正常、无 JS 报错、无可见“直接删除”；浏览器点击自检沙箱后真实进入回收站，审计写入 `action=batch`；`--allow-root` 可放行指定盘缓存目录，形似前缀的兄弟目录仍拒绝
 - [x] R25 CI 复核：Windows runner 的 `%TEMP%` 为 8.3 短名 `RUNNER~1`，allowlist/根目录若为长名会把合法路径误判为“不在白名单 / 路径越界”，7 项 HTTP 测试失败
 - [x] R26 短名归一：`raw_norm` 用 `GetLongPathNameW` 只展开已存在前缀的 8.3 短名、不解析 junction，`_within_roots` 两侧统一走同一套归一；新增短名/长名等价回归测试，42 项通过
 - [x] R27 推送 GitHub：提交 `e400a56` 推送后 CI 的 Windows 与 Ubuntu 两个 job 均通过；随后勾选本项并同步 `v0.2.1` 标签到收尾提交，远端 blob 哈希与本地一致
