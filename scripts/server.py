@@ -11,9 +11,13 @@ Usage:
     macOS:   python3 scripts/server.py /tmp/analysis.json
 
 SAFETY MODEL — read before changing:
-- Allowlist: only paths listed in this report's green items `trash_paths` are
-  accepted for rm/trash. Every request path is realpath-resolved and must be in
-  the allowlist AND under an allowed root (default: $HOME + Program Files).
+- Allowlist: only the exact paths listed in this report's `trash_paths` are
+  accepted for rm/trash. Membership is matched on the report path itself
+  (lexically normalized), NOT on its resolved target, so a listed link never
+  grants permission to delete what it points to.
+- Every request must also stay under an allowed root (default: $HOME + Program
+  Files). For a junction / symlink, the link's own location is checked, because
+  only the link is removed; its target does not need to be under the root.
 - Permanent delete is OFF by default. `--allow-rm` must be passed explicitly;
   without it the server rejects mode=rm and the report hides delete buttons.
 - Sensitive paths (home root, drive roots, AppData, Documents/Desktop/Downloads,
@@ -62,8 +66,26 @@ def expand(p):
     return os.path.realpath(os.path.expanduser(p))
 
 
+def raw_norm(p):
+    """报告路径的词法规范形式：不解析链接，只统一绝对路径、大小写与分隔符。
+
+    白名单按这个形式匹配，避免「报告列了链接，却连带放行链接指向的目标」。"""
+    return os.path.normcase(os.path.abspath(os.path.expanduser(p)))
+
+
 def _norm(p):
     return os.path.normcase(os.path.realpath(p))
+
+
+def _within_roots(path, roots):
+    """path 是否等于某个根或位于其下；根自身带尾分隔符时不再重复拼接。"""
+    p = os.path.normcase(os.path.abspath(os.path.expanduser(path)))
+    for b in roots:
+        base = os.path.normcase(os.path.abspath(os.path.expanduser(b)))
+        prefix = base if base.endswith(os.sep) else base + os.sep
+        if p == base or p.startswith(prefix):
+            return True
+    return False
 
 
 def is_reparse_point(path):
@@ -130,14 +152,23 @@ def sensitive_paths():
     return out
 
 
-def validate_target(rp, allow, mode, roots=None):
-    """返回 None 表示允许，否则返回拒绝原因。rp 必须是 realpath 结果。"""
+def validate_target(p, allow, mode, roots=None):
+    """返回 None 表示允许，否则返回拒绝原因。
+
+    白名单按报告里的原始路径匹配；链接只看自身位置，不要求目标在根目录内，
+    因为执行时只删链接本身，不会递归目标。"""
     roots = ROOTS if roots is None else roots
-    if rp not in allow:
+    raw = os.path.abspath(os.path.expanduser(p))
+    raw_c = os.path.normcase(raw)
+    allow_c = {raw_norm(a) for a in allow}
+    if raw_c not in allow_c:
         return "路径不在白名单"
-    rp_c = os.path.normcase(rp)
-    bases = [os.path.normcase(b) for b in roots]
-    if not any(rp_c == b or rp_c.startswith(b + os.sep) for b in bases):
+    if mode in ("rm", "trash") and is_reparse_point(raw):
+        if not _within_roots(raw_c, roots):
+            return "路径越界"
+        return None
+    rp = expand(raw)
+    if not _within_roots(rp, roots):
         return "路径越界"
     if mode in ("rm", "trash") and _norm(rp) in sensitive_paths():
         return "拒绝操作敏感目录"
@@ -176,27 +207,28 @@ def load(src):
     #   rm    = 仅绿灯 trash_paths（可直接删的纯缓存）
     #   trash = 绿灯 + 黄灯 trash_paths（黄灯只准移回收站/废纸篓，不准直接删）
     #   open  = trash 全集 + 黄灯 path + 红灯 app_paths（仅"在文件管理器打开"）
+    # 一律按报告里的原始路径入表：若某条是链接，只放行链接本身，不放行其目标。
     rm_allow, trash_allow, open_allow = set(), set(), set()
     for it in data.get("green", []):
         for p in (it.get("trash_paths") or []):
-            rp = expand(p)
+            rp = raw_norm(p)
             rm_allow.add(rp)
             trash_allow.add(rp)
             open_allow.add(rp)
     for it in data.get("yellow", []):
         for p in (it.get("trash_paths") or []):
-            rp = expand(p)
+            rp = raw_norm(p)
             trash_allow.add(rp)
             open_allow.add(rp)
         if it.get("path"):
-            rp = expand(it["path"])
-            if os.path.exists(rp):
+            rp = raw_norm(it["path"])
+            if os.path.exists(expand(it["path"])):
                 open_allow.add(rp)
     # 红灯只允许"打开"（应用本体在 /Applications，删除让用户在访达里自己卸）
     for it in data.get("red", []):
         for p in (it.get("app_paths") or []):
-            rp = expand(p)
-            if os.path.exists(rp):
+            rp = raw_norm(p)
+            if os.path.exists(expand(p)):
                 open_allow.add(rp)
     return data, tpl, rm_allow, trash_allow, open_allow
 
@@ -347,24 +379,20 @@ class Handler(BaseHTTPRequestHandler):
         # 先整体校验，再执行：任何一条不合法都不会造成半批删除。
         prepared = []
         for p in paths:
-            rp = expand(p)
             raw = os.path.abspath(os.path.expanduser(p))
-            err = validate_target(rp, allow, mode)
-            if err is None and is_reparse_point(raw):
-                # 链接本身也必须在白名单/根目录内，但执行时只删链接
-                err = validate_target(expand(raw), allow, mode)
+            err = validate_target(raw, allow, mode)
             if err:
                 audit({"mode": mode, "path": p, "ok": False,
                        "status": "rejected", "error": err})
                 self._send(403, json.dumps({"ok": False, "error": "%s：%s" % (err, p)},
                                            ensure_ascii=False))
                 return
-            prepared.append((p, rp, raw))
+            prepared.append((p, raw, expand(raw)))
 
         results = []
-        for p, rp, raw in prepared:
+        for p, raw, rp in prepared:
             target = raw if is_reparse_point(raw) else rp
-            if mode in ("rm", "trash") and not os.path.exists(raw):
+            if mode in ("rm", "trash") and not os.path.lexists(raw):
                 results.append({"path": p, "ok": True, "status": "missing"})
                 audit({"mode": mode, "path": p, "ok": True, "status": "missing"})
                 continue
@@ -378,7 +406,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     hard_delete(target)
                     status = "deleted"
-                if mode in ("rm", "trash") and os.path.exists(raw):
+                if mode in ("rm", "trash") and os.path.lexists(raw):
                     raise OSError("操作后源路径仍然存在")
                 results.append({"path": p, "ok": True, "status": status})
                 audit({"mode": mode, "path": p, "ok": True, "status": status})

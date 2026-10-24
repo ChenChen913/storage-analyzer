@@ -61,6 +61,21 @@ def run_script(name, *args):
         capture_output=True, text=True, encoding="utf-8", timeout=180, env=env)
 
 
+def make_dir_link(link, target):
+    """创建目录链接：Windows 用 junction（无需管理员），其他平台用 symlink。
+
+    创建失败返回 False，由调用方 skipTest，避免把环境限制误判为代码失败。"""
+    if sys.platform.startswith("win"):
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", link, target],
+                           capture_output=True, text=True)
+        return r.returncode == 0
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return True
+    except OSError:
+        return False
+
+
 class ReportUtilTests(unittest.TestCase):
     def test_json_for_script_escapes_closing_tag(self):
         blob = report_util.json_for_script({"name": "</script><script>alert(1)"})
@@ -292,6 +307,56 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(server.validate_target(os.path.realpath(p), set(), "trash",
                                                 roots=[self.tmp]), "路径不在白名单")
 
+    def test_root_trailing_sep_accepts_child_and_rejects_prefix_sibling(self):
+        # --allow-root "D:\" 会带尾分隔符；不能拼成 "D:\\" 把合法子路径全拒掉
+        base = os.path.join(self.tmp, "cache")
+        sibling = os.path.join(self.tmp, "cache2")
+        os.makedirs(base)
+        os.makedirs(sibling)
+        child = os.path.join(base, "a.bin")
+        open(child, "w").close()
+        self.assertIsNone(server.validate_target(
+            child, {child}, "trash", roots=[base + os.sep]))
+        self.assertEqual(server.validate_target(
+            sibling, {sibling}, "trash", roots=[base + os.sep]), "路径越界")
+
+    def test_link_target_not_authorized_by_listed_link(self):
+        target = os.path.join(self.tmp, "target")
+        os.makedirs(target)
+        link = os.path.join(self.tmp, "link")
+        if not make_dir_link(link, target):
+            self.skipTest("当前环境无法创建目录链接")
+        self.assertEqual(server.validate_target(
+            target, {server.raw_norm(link)}, "trash", roots=[self.tmp]),
+            "路径不在白名单")
+
+    def test_link_outside_root_rejected(self):
+        root = os.path.join(self.tmp, "root")
+        os.makedirs(root)
+        target = os.path.join(root, "target")
+        os.makedirs(target)
+        link = os.path.join(self.tmp, "outside_link")
+        if not make_dir_link(link, target):
+            self.skipTest("当前环境无法创建目录链接")
+        self.assertEqual(server.validate_target(
+            link, {server.raw_norm(link)}, "trash", roots=[root]), "路径越界")
+
+    def test_load_allowlist_uses_report_path_not_resolved_target(self):
+        target = os.path.join(self.tmp, "target")
+        os.makedirs(target)
+        link = os.path.join(self.tmp, "link")
+        if not make_dir_link(link, target):
+            self.skipTest("当前环境无法创建目录链接")
+        src = os.path.join(self.tmp, "analysis.json")
+        with open(src, "w", encoding="utf-8") as f:
+            json.dump({"green": [{"trash_paths": [link]}]}, f)
+        _, _, rm_allow, trash_allow, open_allow = server.load(src)
+        self.assertIn(server.raw_norm(link), rm_allow)
+        self.assertIn(server.raw_norm(link), trash_allow)
+        self.assertIn(server.raw_norm(link), open_allow)
+        self.assertNotIn(server.raw_norm(target), rm_allow,
+                         "报告列链接时，不得连带放行链接目标")
+
     @unittest.skipUnless(sys.platform.startswith("win"), "junction 仅 Windows")
     def test_junction_deletes_link_only(self):
         target = os.path.join(self.tmp, "target")
@@ -413,6 +478,37 @@ class ServerHttpTests(unittest.TestCase):
         statuses = {r["path"]: r.get("status") for r in data["results"]}
         self.assertEqual(statuses[p], "deleted")
         self.assertEqual(statuses[missing], "missing")
+
+    def test_listed_link_authorizes_link_only(self):
+        target = os.path.join(self.tmp, "target")
+        os.makedirs(target)
+        keep = os.path.join(target, "keep.txt")
+        with open(keep, "w", encoding="utf-8") as f:
+            f.write("keep")
+        link = os.path.join(self.tmp, "cache_link")
+        if not make_dir_link(link, target):
+            self.skipTest("当前环境无法创建目录链接")
+        server.RM_ALLOW = {server.raw_norm(link)}
+        server.ALLOW_RM = True
+        code, data = self.post({"token": server.TOKEN, "mode": "rm", "paths": [target]})
+        self.assertEqual(code, 403, "链接不能把白名单扩展成它指向的目标")
+        self.assertTrue(os.path.exists(keep))
+        code, data = self.post({"token": server.TOKEN, "mode": "rm", "paths": [link]})
+        self.assertEqual(code, 200, data)
+        self.assertFalse(os.path.lexists(link))
+        self.assertTrue(os.path.exists(keep), "只删链接，不得递归目标")
+
+    @unittest.skipUnless(not sys.platform.startswith("win"),
+                         "Windows 创建悬空符号链接需要额外权限")
+    def test_dangling_symlink_removed_not_reported_missing(self):
+        link = os.path.join(self.tmp, "dangling")
+        os.symlink(os.path.join(self.tmp, "does-not-exist"), link)
+        server.RM_ALLOW = {server.raw_norm(link)}
+        server.ALLOW_RM = True
+        code, data = self.post({"token": server.TOKEN, "mode": "rm", "paths": [link]})
+        self.assertEqual(code, 200, data)
+        self.assertEqual(data["results"][0]["status"], "deleted")
+        self.assertFalse(os.path.lexists(link))
 
     def test_path_not_in_allowlist_rejected(self):
         p = self.make_file()

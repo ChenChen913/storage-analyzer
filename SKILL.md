@@ -131,7 +131,7 @@ python scripts\server.py %TEMP%\storage_analysis.json     # Windows
 python3 scripts/server.py /tmp/storage_analysis.json       # macOS
 ```
 
-`server.py` 起在 127.0.0.1 + 随机端口 + 随机 token，自动打开浏览器。安全模型：`rm` 默认关闭，需 `--allow-rm` 显式开启；`trash` 允许绿灯 + 黄灯 `trash_paths`；`open` 允许三灯的路径；所有请求做 token（`compare_digest`）+ Host 校验 + 路径 allowlist + realpath 越界检查 + 敏感目录 denylist；junction/符号链接只删链接本身，不递归目标；回收站操作校验返回码、`fAnyOperationsAborted` 和源路径是否真的消失；每次操作逐项返回结果并追加写入 `state/audit.jsonl`。
+`server.py` 起在 127.0.0.1 + 随机端口 + 随机 token，自动打开浏览器。安全模型：`rm` 默认关闭，需 `--allow-rm` 显式开启；`trash` 允许绿灯 + 黄灯 `trash_paths`；`open` 允许三灯的路径；所有请求做 token（`compare_digest`）+ Host 校验 + 按报告原始路径匹配的 allowlist + 越界检查 + 敏感目录 denylist；报告列出的链接只授权链接本身，不授权它指向的目标，链接自身位置须在允许根内；junction/符号链接只删链接本身，不递归目标；回收站操作校验返回码、`fAnyOperationsAborted` 和源路径是否真的消失；每次操作逐项返回结果并追加写入 `state/audit.jsonl`。
 
 启动流程、静态报告、排版字段（`summary.overview`、`tier_stats`、进度条分段）、无按钮排障见 [reporting-guide.md](references/reporting-guide.md)。
 

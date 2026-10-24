@@ -18,7 +18,7 @@
 ## 辨认"神秘 UUID 容器"
 
 `~/Library/Containers/` 下 UUID 命名的大目录，要查清属于哪个 App：
-- `ls` 进 `Data/Documents/`、`Data/Library/`，找带 bundle id 的子目录（如 `com.bilibili.bbad` → 哔哩哔哩）
+- `ls` 进 `Data/Documents/`、`Data/Library/`，找带 bundle id 的子目录（如 `com.example.video` → 对应视频应用）
 - 大头常藏在隐藏目录（如 `.Downloads/` 里的 `.bilitask` 离线视频）
 - 仍只读，别动文件
 

@@ -235,9 +235,10 @@ python3 scripts/server.py /tmp/storage_analysis.json
 路径护栏：
 
 - 服务只绑定 `127.0.0.1`，token 用 `secrets.compare_digest` 比较，Host 头校验防 DNS rebinding。
-- 请求路径必须同时通过 allowlist、realpath 越界检查和允许根目录校验。默认根是 `%USERPROFILE%` 与 `Program Files`；其他盘需启动时加 `--allow-root "D:\"`。
+- 请求路径必须同时通过 allowlist、越界检查和允许根目录校验。默认根是 `%USERPROFILE%` 与 `Program Files`；其他盘需启动时加 `--allow-root "D:\"`，盘符根带尾分隔符也能正常放行子目录。
+- allowlist 按报告里的原始路径匹配，不按解析后的目标匹配：报告列了一个链接，只允许删这个链接本身，不允许删它指向的目录。
 - 即使路径来自白名单，家目录根、盘符根、`AppData` 各层、Desktop/Documents/Downloads、Program Files 根、`System32`/`WinSxS` 等敏感目录仍会被拒绝。
-- junction / 符号链接只删除链接本身，不递归进目标目录。
+- junction / 符号链接只删除链接本身，不递归进目标目录；链接自身位置必须在允许根内，目标则不受此限制。
 - 每次操作按路径逐项执行，单项失败不中断整批；结果逐项返回，前端按路径标记成功或失败。
 - 所有 `trash` / `rm` / `open` 记录追加写入 `state/audit.jsonl`，该目录已 gitignore。
 
@@ -252,7 +253,7 @@ python -m unittest discover -s tests -v
 
 | 验证项 | 状态 |
 |--------|------|
-| 路径护栏、敏感目录拒绝、junction 处理 | 自动化测试覆盖 |
+| 路径护栏、敏感目录拒绝、junction 处理 | 自动化测试覆盖，含盘符根尾分隔符、链接不得放行目标、根外链接拒绝 |
 | 永久删除开关、逐项结果、审计日志 | 自动化测试覆盖 |
 | 回收站删除与结果校验 | 本机真实删除验证：普通文件、中文与空格文件名、空目录、非空目录、只读文件，单次批量请求 |
 | `</script>` 注入转义、前端单引号转义 | 自动化测试覆盖 |
@@ -263,7 +264,7 @@ python -m unittest discover -s tests -v
 | 批量审计汇总 | 自动化测试覆盖（总数 / 成功数 / 失败数 / 风险等级） |
 | 回收站操作失败与取消 | 自动化测试用 mock 覆盖，验证逐项报错且不降级为永久删除 |
 
-当前共 35 项测试，`python -m unittest discover -s tests -v` 全部通过（1 项真实回收站用例默认跳过）。
+当前共 41 项测试，`python -m unittest discover -s tests -v` 全部通过。Windows 上默认跳过 2 项：真实回收站用例，以及仅 POSIX 可创建的悬空符号链接用例。
 
 真实回收站用例会往你的回收站里写入测试项，因此默认不执行。需要验证时显式开启：
 
