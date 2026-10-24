@@ -81,19 +81,21 @@ class RulesTests(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="sa_rules_")
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.csv = os.path.join(self.tmp, "scan_C.csv")
-        base = r"C:\sandbox"
+        # 用本机分隔符拼路径：Windows 用反斜杠，Linux CI 用斜杠，规则引擎两边都要能分组
+        base = os.path.join(self.tmp, "sandbox")
+        self.base = base
         write_csv(self.csv, [
-            (base + r"\App\plugins\a.zip", 5 * 2**20),
-            (base + r"\App\plugins\b_download", 3 * 2**20),
-            (base + r"\App\Code Cache\js.bin", 1 * 2**20),
-            (base + r"\App\Cache\blob.bin", 2 * 2**20),
-            (base + r"\App\crashdumps\crash.dmp", 4 * 2**20),
-            (base + r"\App\dumps\data.bin", 2 * 2**20),
-            (base + r"\App\bin\2.6.9\app.exe", 1 * 2**20),
-            (base + r"\App\bin\2.6.10\app.exe", 1 * 2**20),
-            (base + r"\App\bin\2.6.10-beta\app.exe", 1 * 2**20),
-            (base + r"\App\logs\huge.log", 30 * 2**20),
-            (base + r"\App\logs\small.log", 1024),
+            (os.path.join(base, "App", "plugins", "a.zip"), 5 * 2**20),
+            (os.path.join(base, "App", "plugins", "b_download"), 3 * 2**20),
+            (os.path.join(base, "App", "Code Cache", "js.bin"), 1 * 2**20),
+            (os.path.join(base, "App", "Cache", "blob.bin"), 2 * 2**20),
+            (os.path.join(base, "App", "crashdumps", "crash.dmp"), 4 * 2**20),
+            (os.path.join(base, "App", "dumps", "data.bin"), 2 * 2**20),
+            (os.path.join(base, "App", "bin", "2.6.9", "app.exe"), 1 * 2**20),
+            (os.path.join(base, "App", "bin", "2.6.10", "app.exe"), 1 * 2**20),
+            (os.path.join(base, "App", "bin", "2.6.10-beta", "app.exe"), 1 * 2**20),
+            (os.path.join(base, "App", "logs", "huge.log"), 30 * 2**20),
+            (os.path.join(base, "App", "logs", "small.log"), 1024),
         ])
 
     def test_groups_review_and_version_order(self):
@@ -105,11 +107,12 @@ class RulesTests(unittest.TestCase):
 
         plugin = [g for g in green if g["rule"] == "plugins_zip_cache"]
         self.assertEqual(len(plugin), 1, "带 BOM 的 CSV 不应把同目录拆成两组")
-        self.assertTrue(plugin[0]["path"].startswith(r"C:\sandbox\App\plugins"))
+        self.assertTrue(plugin[0]["path"].startswith(
+            os.path.join(self.base, "App", "plugins")))
         self.assertEqual(len(plugin[0]["files"]), 2)
 
         self.assertTrue(any(g["rule"] == "crash_dumps" for g in green))
-        self.assertFalse(any(g["path"].endswith(r"\Cache") for g in green),
+        self.assertFalse(any(g["path"].endswith(os.sep + "Cache") for g in green),
                          "宽泛 cache 目录不能直接判绿")
         self.assertTrue(any(g["rule"] == "broad_cache_name" for g in review))
         self.assertTrue(any(g["rule"] == "big_log_file" for g in review))
@@ -545,6 +548,8 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(res["count"], 3)
         self.assertEqual(res["total"], 2 * 2**20 + 1024 + 10)
 
+    @unittest.skipUnless(sys.platform.startswith("win"),
+                         "Windows 盘符/临时清单契约，仅 Windows runner 有意义")
     def test_scan_windows_coverage_contract(self):
         original_walk = scan.walk_export_csv
         originals = {name: getattr(scan, name) for name in (

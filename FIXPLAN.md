@@ -21,6 +21,7 @@
 - [x] R13 推送 GitHub：12 个新增/修改文件经 Git Data API 上传，远端 blob 哈希与本地逐一一致；仓库中不含 `state/`、临时 CSV 与个人数据；已打 `v0.2.0` 标签
 - [x] R14 JSON `--out`：`rules.py` / `orphan.py` 增加 `--out` 直接写 UTF-8 无 BOM 文件
 - [x] R15 orphan 多 CSV：`--csv` 改为 `nargs="+"` 并合并多盘树，与文档一致
+- [x] R16 CI 修复：`RulesTests` 改用本机路径分隔符，Linux runner 可验证规则分组；Windows 盘符/临时清单契约测试仅在 Windows 执行
 
 ## A 安全
 
