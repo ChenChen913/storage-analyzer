@@ -18,7 +18,7 @@
 - [x] R10 前端逐项失败展示：批量与单项操作显示每条失败路径与原因，不只显示首个错误
 - [x] R11 完整调用一次 skill：两盘扫描 4,132,781 文件（Everything 失败 → WizTree 降级，coverage 正确标 `partial` / `limited`）→ rules（3 绿组、247 需确认）→ orphan（47 项、高置信 11）→ apps（217 应用）→ registry（110 个新目录）→ 报告页 7 个区块正常、无 JS 报错；未启用 `--allow-rm` 时页面无“直接删除”；沙箱项真实移入回收站并写入 `action=batch` 审计
 - [x] R12 自查与测试：35 项测试通过（1 项真实回收站按需跳过），`py_compile` 全部通过，Markdown 文档无本机路径 / 用户名等个人数据
-- [ ] R13 推送 GitHub：核对远端 blob 哈希，确认不含 state 与个人数据
+- [x] R13 推送 GitHub：12 个新增/修改文件经 Git Data API 上传，远端 blob 哈希与本地逐一一致；仓库中不含 `state/`、临时 CSV 与个人数据；已打 `v0.2.0` 标签
 - [x] R14 JSON `--out`：`rules.py` / `orphan.py` 增加 `--out` 直接写 UTF-8 无 BOM 文件
 - [x] R15 orphan 多 CSV：`--csv` 改为 `nargs="+"` 并合并多盘树，与文档一致
 
