@@ -76,6 +76,24 @@ def make_dir_link(link, target):
         return False
 
 
+def win_short_path(p):
+    """返回 Windows 8.3 短路径；非 Windows、卷未启用短名或调用失败返回 None。"""
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        fn = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+        fn.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        fn.restype = wintypes.DWORD
+        buf = ctypes.create_unicode_buffer(32768)
+        if fn(p, buf, len(buf)):
+            return buf.value
+    except Exception:
+        pass
+    return None
+
+
 class ReportUtilTests(unittest.TestCase):
     def test_json_for_script_escapes_closing_tag(self):
         blob = report_util.json_for_script({"name": "</script><script>alert(1)"})
@@ -319,6 +337,26 @@ class ServerSecurityTests(unittest.TestCase):
             child, {child}, "trash", roots=[base + os.sep]))
         self.assertEqual(server.validate_target(
             sibling, {sibling}, "trash", roots=[base + os.sep]), "路径越界")
+
+    @unittest.skipUnless(sys.platform.startswith("win"), "8.3 短名仅 Windows")
+    def test_short_name_matches_long_allowlist(self):
+        # CI 的 %TEMP% 可能是 C:\Users\RUNNER~1\...；白名单若是长名，
+        # 请求里的短名必须能对上，否则合法路径会被误判“不在白名单”。
+        base = os.path.join(self.tmp, "a_very_long_directory_name_for_short_path")
+        os.makedirs(base)
+        child = os.path.join(base, "cache.bin")
+        with open(child, "w", encoding="utf-8") as f:
+            f.write("x")
+        short = win_short_path(child)
+        if not short or os.path.normcase(short) == os.path.normcase(child):
+            self.skipTest("当前卷未启用 8.3 短名")
+        self.assertEqual(server.raw_norm(short), server.raw_norm(child))
+        self.assertIsNone(server.validate_target(short, {child}, "trash",
+                                                 roots=[self.tmp]))
+        missing_long = os.path.join(base, "already-gone.bin")
+        missing_short = os.path.join(win_short_path(base), "already-gone.bin")
+        self.assertEqual(server.raw_norm(missing_short),
+                         server.raw_norm(missing_long))
 
     def test_link_target_not_authorized_by_listed_link(self):
         target = os.path.join(self.tmp, "target")

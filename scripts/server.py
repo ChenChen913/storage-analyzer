@@ -66,11 +66,47 @@ def expand(p):
     return os.path.realpath(os.path.expanduser(p))
 
 
-def raw_norm(p):
-    """报告路径的词法规范形式：不解析链接，只统一绝对路径、大小写与分隔符。
+def _win_long_path(p):
+    """Windows：把已存在路径里的 8.3 短名展开成长名，返回 None 表示失败。
 
-    白名单按这个形式匹配，避免「报告列了链接，却连带放行链接指向的目标」。"""
-    return os.path.normcase(os.path.abspath(os.path.expanduser(p)))
+    GetLongPathNameW 只转换目录项名称，不解析 junction / 符号链接，
+    所以不会把「报告里的链接」变成「链接指向的目标」。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        fn = ctypes.WinDLL("kernel32", use_last_error=True).GetLongPathNameW
+        fn.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        fn.restype = wintypes.DWORD
+        buf = ctypes.create_unicode_buffer(32768)
+        if fn(p, buf, len(buf)):
+            return buf.value
+    except Exception:
+        pass
+    return None
+
+
+def raw_norm(p):
+    """报告路径的词法规范形式：统一绝对路径、8.3 短名与大小写，不解析链接。
+
+    白名单按这个形式匹配，避免「报告列了链接，却连带放行链接指向的目标」。
+    不存在的尾部保留原名，只把最近的可解析前缀展开成长名（CI 的 8.3 临时目录
+    与用户目录长名需要能对上）。"""
+    p = os.path.abspath(os.path.expanduser(p))
+    if sys.platform.startswith("win"):
+        tail = []
+        cur = p
+        while True:
+            long_path = _win_long_path(cur)
+            if long_path:
+                p = os.path.join(long_path, *reversed(tail)) if tail else long_path
+                break
+            name = os.path.basename(cur)
+            parent = os.path.dirname(cur)
+            if not name or parent == cur:
+                break
+            tail.append(name)
+            cur = parent
+    return os.path.normcase(p)
 
 
 def _norm(p):
@@ -79,9 +115,9 @@ def _norm(p):
 
 def _within_roots(path, roots):
     """path 是否等于某个根或位于其下；根自身带尾分隔符时不再重复拼接。"""
-    p = os.path.normcase(os.path.abspath(os.path.expanduser(path)))
+    p = raw_norm(path)
     for b in roots:
-        base = os.path.normcase(os.path.abspath(os.path.expanduser(b)))
+        base = raw_norm(b)
         prefix = base if base.endswith(os.sep) else base + os.sep
         if p == base or p.startswith(prefix):
             return True
@@ -159,7 +195,7 @@ def validate_target(p, allow, mode, roots=None):
     因为执行时只删链接本身，不会递归目标。"""
     roots = ROOTS if roots is None else roots
     raw = os.path.abspath(os.path.expanduser(p))
-    raw_c = os.path.normcase(raw)
+    raw_c = raw_norm(raw)
     allow_c = {raw_norm(a) for a in allow}
     if raw_c not in allow_c:
         return "路径不在白名单"

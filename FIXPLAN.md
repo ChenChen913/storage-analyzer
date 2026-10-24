@@ -33,7 +33,9 @@
 - [x] R22 文档与版本：README 路径护栏与测试矩阵、SKILL 安全模型、CHANGELOG 0.2.1
 - [x] R23 全量测试与自查：41 项测试通过（2 项按需跳过）、`py_compile` 通过、文档隐私复查并替换一处示例 bundle id
 - [x] R24 完整调用一次 skill：两盘扫描 413 万文件（WizTree、coverage 标 partial/limited）→ rules（3 绿组、247 需确认）→ orphan（47 项、高置信 11）→ apps（217 应用）→ registry（113 个新目录）→ 报告页 7 个区块正常、无 JS 报错、无可见“直接删除”；浏览器点击自检沙箱后真实进入回收站，审计写入 `action=batch`；`--allow-root "D:\"` 下 `D:\Cache` 放行、`D:\Cache2` 仍拒绝
-- [ ] R25 推送 GitHub：核对远端 blob 哈希，打 `v0.2.1` 标签
+- [x] R25 CI 复核：Windows runner 的 `%TEMP%` 为 8.3 短名 `RUNNER~1`，allowlist/根目录若为长名会把合法路径误判为“不在白名单 / 路径越界”，7 项 HTTP 测试失败
+- [x] R26 短名归一：`raw_norm` 用 `GetLongPathNameW` 只展开已存在前缀的 8.3 短名、不解析 junction，`_within_roots` 两侧统一走同一套归一；新增短名/长名等价回归测试，42 项通过
+- [ ] R27 推送 GitHub：重跑 CI 全绿，核对远端 blob 哈希，打 `v0.2.1` 标签
 
 ## A 安全
 
