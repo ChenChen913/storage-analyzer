@@ -38,9 +38,9 @@ python3 scripts/server.py /tmp/storage_analysis.json
 
 `server.py` 起在 127.0.0.1 + 随机端口 + 随机 token，自动用默认浏览器打开。Ctrl+C 停。
 
-🟢 项给「移到回收站/废纸篓」(可逆)；只有显式加 `--allow-rm` 启动时才额外给「直接删除」(立即释放、不可逆)。🟡 项给「在资源管理器/访达打开」+（有安全子路径时）「移到回收站/废纸篓」。
+🟢 项默认同时给「移到回收站/废纸篓」(可逆) 和「直接删除」(立即释放、不可逆)；用 `--no-allow-rm` 启动时只剩前者。🟡 项给「在资源管理器/访达打开」+（有安全子路径时）「移到回收站/废纸篓」。
 
-**安全模型——三套白名单，权限从严到宽**：`rm` 只允许绿灯 `trash_paths`，且服务必须用 `--allow-rm` 启动，否则请求被 403 拒绝；`trash` 允许绿灯+橙灯 `trash_paths`（橙灯永远不能 rm）；`open`（在文件管理器打开，非破坏性）允许上述全部 + 橙灯真实 `path`。所有请求 realpath 校验 + 必须在允许根内（默认 `$HOME` 与 `Program Files`，其他盘用 `--allow-root` 放行）+ 敏感目录 denylist + token + Host 校验，每次点击浏览器先 confirm。
+**安全模型——三套白名单，权限从严到宽**：`rm` 只允许绿灯 `trash_paths`，默认开启（服务加 `--no-allow-rm` 时 403 拒绝）；`trash` 允许绿灯+橙灯 `trash_paths`（橙灯永远不能 rm）；`open`（在文件管理器打开，非破坏性）允许上述全部 + 橙灯真实 `path`。所有请求 realpath 校验 + 必须在允许根内（默认 `$HOME` 与 `Program Files`，其他盘用 `--allow-root` 放行）+ 敏感目录 denylist + token + Host 校验，每次点击浏览器先 confirm。
 
 ## Windows 服务启动流程
 

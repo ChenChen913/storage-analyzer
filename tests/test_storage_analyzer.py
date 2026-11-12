@@ -106,7 +106,7 @@ class ReportUtilTests(unittest.TestCase):
             tpl = f.read()
         self.assertIn("'&#39;'", tpl)
         self.assertIn("DELETE.allow_rm", tpl)
-        self.assertIn("本次服务未启用永久删除", tpl)
+        self.assertIn("--no-allow-rm", tpl)
 
 
 class RulesTests(unittest.TestCase):
@@ -487,13 +487,20 @@ class ServerHttpTests(unittest.TestCase):
         self.assertEqual(code, 403)
         self.assertIn("host", data["error"])
 
-    def test_rm_disabled_by_default(self):
+    def test_rm_can_be_disabled_with_flag(self):
         p = self.make_file()
         server.RM_ALLOW = {os.path.realpath(p)}
+        server.ALLOW_RM = False
         code, data = self.post({"token": server.TOKEN, "mode": "rm", "paths": [p]})
         self.assertEqual(code, 403)
         self.assertTrue(os.path.exists(p))
-        self.assertIn("--allow-rm", data["error"])
+        self.assertIn("--no-allow-rm", data["error"])
+
+    def test_cli_rm_default_on_with_opt_out(self):
+        parser = server.build_parser()
+        self.assertTrue(parser.parse_args(["report.json"]).allow_rm)
+        self.assertTrue(parser.parse_args(["report.json", "--allow-rm"]).allow_rm)
+        self.assertFalse(parser.parse_args(["report.json", "--no-allow-rm"]).allow_rm)
 
     def test_rm_enabled_deletes_and_audits(self):
         p = self.make_file()

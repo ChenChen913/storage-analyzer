@@ -441,7 +441,7 @@ function delBlock(it){
     : '';
   const note = DELETE.allow_rm
     ? `<div class="del-note"><b>移到${TRASH_WORD}</b>：可逆，删错能从${FM}${TRASH_WORD}捞回，但要清空${TRASH_WORD}才真正释放空间。<b>直接删除</b>：立即释放、不可恢复。绿灯都是可再生缓存，删了会自动重建。</div>`
-    : `<div class="del-note"><b>移到${TRASH_WORD}</b>：可逆，删错能从${FM}${TRASH_WORD}捞回，清空${TRASH_WORD}后释放空间。本次服务未启用永久删除（默认关闭），需要时由用户授权后加 <code>--allow-rm</code> 重启服务。</div>`;
+    : `<div class="del-note"><b>移到${TRASH_WORD}</b>：可逆，删错能从${FM}${TRASH_WORD}捞回，清空${TRASH_WORD}后释放空间。本次服务以 <code>--no-allow-rm</code> 启动，只提供移${TRASH_WORD}。</div>`;
   return `<div class="field del-actions" data-paths="${payload}">
     <div class="label">在网页上直接处理（${it.trash_paths.length} 个路径）</div>
     <div class="del-row">

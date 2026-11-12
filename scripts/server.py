@@ -7,7 +7,7 @@ Recycle Bin / Trash or delete them outright. Stop with Ctrl+C.
 
 Usage:
     Windows: python scripts\\server.py %TEMP%\\analysis.json
-             python scripts\\server.py %TEMP%\\analysis.json --allow-rm
+             python scripts\\server.py %TEMP%\\analysis.json --no-allow-rm
     macOS:   python3 scripts/server.py /tmp/analysis.json
 
 SAFETY MODEL — read before changing:
@@ -18,11 +18,12 @@ SAFETY MODEL — read before changing:
 - Every request must also stay under an allowed root (default: $HOME + Program
   Files). For a junction / symlink, the link's own location is checked, because
   only the link is removed; its target does not need to be under the root.
-- Permanent delete is OFF by default. `--allow-rm` must be passed explicitly;
-  without it the server rejects mode=rm and the report hides delete buttons.
+- Permanent delete is ON by default: mode=rm works out of the box, and the
+  report shows the "直接删除" buttons. Pass `--no-allow-rm` for a
+  recycle-bin-only session, where mode=rm is rejected and those buttons hide.
 - Sensitive paths (home root, drive roots, AppData, Documents/Desktop/Downloads,
   Program Files roots, Windows/System32, ...) are rejected even if they somehow
-  appear in the allowlist.
+  appear in the allowlist. This guard cannot be switched off.
 - Junctions / symlinks are deleted as a link only; the target is never recursed.
 - Bound to 127.0.0.1 only; every POST requires the session token; Host header
   must be 127.0.0.1 (blocks DNS-rebinding from a malicious page).
@@ -398,7 +399,7 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "rm" and not ALLOW_RM:
             self._send(403, json.dumps({
                 "ok": False,
-                "error": "永久删除未启用：启动服务时加 --allow-rm 才会开放",
+                "error": "永久删除已被关闭（--no-allow-rm）：去掉该参数重启服务，或改用移入回收站",
             }, ensure_ascii=False))
             return
         paths = req.get("paths") or []
@@ -467,15 +468,22 @@ class Handler(BaseHTTPRequestHandler):
         }, ensure_ascii=False))
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser(description="存储分析报告服务")
     ap.add_argument("src", help="analysis JSON")
-    ap.add_argument("--allow-rm", action="store_true", help="启用永久删除（默认关闭）")
+    ap.add_argument("--allow-rm", dest="allow_rm", action="store_true", default=True,
+                    help="启用永久删除（默认开启；保留该参数只为兼容旧命令）")
+    ap.add_argument("--no-allow-rm", dest="allow_rm", action="store_false",
+                    help="关闭永久删除，只提供移到回收站/废纸篓")
     ap.add_argument("--allow-root", action="append", default=[], metavar="PATH",
                     help="额外允许的根目录，可重复；用于放行非 HOME 盘的绿灯项")
     ap.add_argument("--no-browser", action="store_true", help="启动后不自动打开浏览器")
     ap.add_argument("--port", type=int, default=0, help="监听端口，默认随机")
-    args = ap.parse_args()
+    return ap
+
+
+def main():
+    args = build_parser().parse_args()
 
     global DATA, TPL, RM_ALLOW, TRASH_ALLOW, OPEN_ALLOW, ALLOW_RM, ROOTS
     DATA, TPL, RM_ALLOW, TRASH_ALLOW, OPEN_ALLOW = load(args.src)
@@ -502,9 +510,10 @@ def main():
     print("绿灯可删 %d 项 | 黄灯可移%s/打开文件夹 %d 项 | 页面上点"
           % (len(RM_ALLOW), trash_word, len(TRASH_ALLOW) - len(RM_ALLOW)))
     if ALLOW_RM:
-        print("永久删除：已启用（--allow-rm）。不可恢复，请逐项确认。")
+        print("永久删除：已启用（默认）。不可恢复，请逐项确认；"
+              "只想要可逆模式就加 --no-allow-rm。")
     else:
-        print("永久删除：未启用（默认）。网页只提供移到%s。" % trash_word)
+        print("永久删除：已关闭（--no-allow-rm）。网页只提供移到%s。" % trash_word)
     print("允许的根目录：" + " | ".join(ROOTS))
     print("用完按 Ctrl+C 停止服务（服务关掉后按钮即失效）")
     sys.stdout.flush()

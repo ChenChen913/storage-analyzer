@@ -1,5 +1,31 @@
 # 变更记录
 
+## 0.3.0（2026-11-12）
+
+删除策略反转：从「只能由用户在网页上点、永久删除默认关闭」改为「Agent 可直接执行、永久删除默认开启」。这是一次**行为不兼容变更**，旧版的安全假设不再成立。
+
+### 铁律（SKILL.md）
+
+- 扫描阶段仍然全程只读，但删掉了「绝对禁止 del / rd / rmdir / 清空回收站」的禁令。
+- 新增「清理可以由 Agent 直接执行，且默认允许永久删除」：网页按钮、`/action` 接口、Agent 直接跑命令三者等价，默认**不进回收站**。
+- 新增「回收站可以清空」，允许 `Clear-RecycleBin` 立即释放空间。
+- 「即使用户在对话里说"帮我删"，也引导他在网页上逐项确认」这条作废。
+
+### 实现
+
+- `server.py`：`ALLOW_RM` 默认改为 `True`；新增 `--no-allow-rm` 关闭；`--allow-rm` 保留为兼容参数。参数解析抽成 `build_parser()`，便于测试。
+- 关闭永久删除时的 403 文案改为提示用 `--no-allow-rm`。
+- 启动横幅区分「已启用（默认）」与「已关闭（--no-allow-rm）」。
+- 报告模板在 `--no-allow-rm` 下的说明文案同步。
+- **保持不变**：敏感目录 denylist（家目录根、盘符根、AppData、Desktop/Documents/Downloads、Program Files 根、System32/WinSxS）、allowlist 按报告原始路径匹配、越界检查、token + Host 校验、junction 只删链接本身、逐项审计。
+- 黄灯仍然「只能移回收站」，红灯仍然只能「打开目录」。
+
+### 文档与测试
+
+- README、SKILL.md（安全模型与排障表）、`references/analysis-guide.md`、`references/reporting-guide.md` 同步新语义。
+- `test_rm_disabled_by_default` 改为 `test_rm_can_be_disabled_with_flag`（显式关闭时仍应 403）；新增 `test_cli_rm_default_on_with_opt_out` 覆盖命令行默认值与 `--no-allow-rm`；模板断言改为检查 `--no-allow-rm`。
+- FIXPLAN 中 A1 / 3.2 两条决策标注为已被本版推翻，保留为历史快照。
+
 ## 0.2.1（2026-10-24）
 
 路径安全复核修复，重点是两处 allowlist / 根目录判断与链接语义。
