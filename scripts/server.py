@@ -21,9 +21,10 @@ SAFETY MODEL — read before changing:
 - Permanent delete is ON by default: mode=rm works out of the box, and the
   report shows the "直接删除" buttons. Pass `--no-allow-rm` for a
   recycle-bin-only session, where mode=rm is rejected and those buttons hide.
-- Sensitive paths (home root, drive roots, AppData, Documents/Desktop/Downloads,
-  Program Files roots, Windows/System32, ...) are rejected even if they somehow
-  appear in the allowlist. This guard cannot be switched off.
+- There is no sensitive-path denylist: any path that is in this report's
+  allowlist and stays under an allowed root may be deleted, including the home
+  root, AppData subtrees and Program Files. Deletion is irreversible; the
+  allowlist, the root scope and the audit log are the remaining guardrails.
 - Junctions / symlinks are deleted as a link only; the target is never recursed.
 - Bound to 127.0.0.1 only; every POST requires the session token; Host header
   must be 127.0.0.1 (blocks DNS-rebinding from a malicious page).
@@ -37,7 +38,6 @@ import os
 import secrets
 import shutil
 import stat
-import string
 import subprocess
 import sys
 import time
@@ -154,41 +154,6 @@ def hard_delete(path):
         os.remove(path)
 
 
-def sensitive_paths():
-    """破坏性操作的黑名单：即使误入白名单也不允许删除。"""
-    out = {_norm(HOME)}
-    if sys.platform.startswith("win"):
-        for rel in ("AppData", os.path.join("AppData", "Local"),
-                    os.path.join("AppData", "Roaming"),
-                    os.path.join("AppData", "LocalLow"),
-                    "Desktop", "Documents", "Downloads", "Pictures", "Videos",
-                    "Music", "OneDrive", "Saved Games", "Favorites", "Links",
-                    "Searches", "Contacts"):
-            out.add(_norm(os.path.join(HOME, rel)))
-        for env in ("USERPROFILE", "PUBLIC", "ProgramData", "ProgramFiles",
-                    "ProgramFiles(x86)", "SystemRoot", "windir", "TEMP", "TMP"):
-            v = os.environ.get(env)
-            if v:
-                out.add(_norm(v))
-        for letter in string.ascii_uppercase:
-            root = letter + ":\\"
-            if os.path.exists(root):
-                out.add(_norm(root))
-        windows = os.environ.get("SystemRoot") or r"C:\Windows"
-        for rel in ("", "System32", "SysWOW64", "WinSxS",
-                    "System Volume Information"):
-            out.add(_norm(os.path.join(windows, rel)))
-        out.add(_norm(r"C:\Users"))
-        out.add(_norm(r"C:\Program Files\WindowsApps"))
-    else:
-        for rel in ("Desktop", "Documents", "Downloads", "Pictures", "Movies",
-                    "Music", "Library", "Applications", ".Trash"):
-            out.add(_norm(os.path.join(HOME, rel)))
-        for p in ("/", "/System", "/Users", "/Library", "/Applications"):
-            out.add(_norm(p))
-    return out
-
-
 def validate_target(p, allow, mode, roots=None):
     """返回 None 表示允许，否则返回拒绝原因。
 
@@ -207,8 +172,6 @@ def validate_target(p, allow, mode, roots=None):
     rp = expand(raw)
     if not _within_roots(rp, roots):
         return "路径越界"
-    if mode in ("rm", "trash") and _norm(rp) in sensitive_paths():
-        return "拒绝操作敏感目录"
     return None
 
 

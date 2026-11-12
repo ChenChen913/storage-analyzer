@@ -1,5 +1,22 @@
 # 变更记录
 
+## 0.3.1（2026-11-12）
+
+移除敏感目录黑名单。允许根目录内的路径不再有「拒绝删除」的特例，家目录根、`AppData` 各层、`System32`、`WindowsApps` 都能删。
+
+### 实现
+
+- `server.py`：删掉 `sensitive_paths()` 整个函数，以及 `validate_target()` 里的 `拒绝操作敏感目录` 分支；顺带清掉只为它存在的 `import string`。
+- 不再特殊拒绝：家目录根、盘符根、`AppData`（Local/Roaming/LocalLow）、Desktop/Documents/Downloads/Pictures/Videos/Music、`ProgramData`、`Program Files`（含 `WindowsApps`）、`Windows`/`System32`/`SysWOW64`/`WinSxS`、`System Volume Information`、`TEMP`。
+- **仍然保留**：token + Host 校验、按报告原始路径匹配的 allowlist、越界检查（路径仍须落在允许根目录内）、junction / 符号链接只删链接本身、逐项审计。
+- **仍然生效的边界**：盘符根这类路径受「允许根目录」约束——默认根只有 `%USERPROFILE%` 与 `Program Files`，要动别的盘或根级路径仍需 `--allow-root`。
+
+### 文档与测试
+
+- SKILL.md（三灯限权、安全模型、排障表）、README（设计要点、路径护栏、测试覆盖表）、`references/reporting-guide.md`、NOTICE 同步新语义。
+- `test_sensitive_home_rejected` 改为 `test_home_root_allowed_when_listed`：断言白名单内的家目录根现在被放行。
+- FIXPLAN 中 A2 / 3.3 的 denylist 决策标注为已被本版推翻。
+
 ## 0.3.0（2026-11-12）
 
 删除策略反转：从「只能由用户在网页上点、永久删除默认关闭」改为「Agent 可直接执行、永久删除默认开启」。这是一次**行为不兼容变更**，旧版的安全假设不再成立。
@@ -17,7 +34,7 @@
 - 关闭永久删除时的 403 文案改为提示用 `--no-allow-rm`。
 - 启动横幅区分「已启用（默认）」与「已关闭（--no-allow-rm）」。
 - 报告模板在 `--no-allow-rm` 下的说明文案同步。
-- **保持不变**：敏感目录 denylist（家目录根、盘符根、AppData、Desktop/Documents/Downloads、Program Files 根、System32/WinSxS）、allowlist 按报告原始路径匹配、越界检查、token + Host 校验、junction 只删链接本身、逐项审计。
+- **保持不变**：敏感目录 denylist（**0.3.1 已整体移除**，见下）、allowlist 按报告原始路径匹配、越界检查、token + Host 校验、junction 只删链接本身、逐项审计。
 - 黄灯仍然「只能移回收站」，红灯仍然只能「打开目录」。
 
 ### 文档与测试

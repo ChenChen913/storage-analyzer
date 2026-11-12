@@ -39,7 +39,7 @@ description: >
 - **扫描阶段全程只读。** 扫描中只能跑扫描/统计/列目录/读元信息，不改文件、不改权限。清理动作不属于扫描阶段，按下面两条铁律执行。
 - **清理可以由 agent 直接执行，且默认允许永久删除。** 三条入口等价：报告网页按钮、`server.py` 的 `/action` 接口、agent 在对话或命令行里直接跑删除命令。默认**不进回收站**，直接彻底删除；需要可逆时改用回收站入口，或给服务加 `--no-allow-rm`。动手前必须让用户明确知道要删哪些路径、大概多少量；不得在用户没指认的路径上自作主张。
 - **扫描中间产物必须收尾清理。** `scan.py` 会在 `%TEMP%` 生成 `scan_<盘符>.csv`（单盘 100-250MB，多盘可达 1GB+），还可能留下 `.wiz` 残留。这些文件是 Step 1.5 和 `--reuse-csv` 复扫的必需输入，**扫描后到报告交付前不得删除**；本轮分析彻底结束、用户确认不再复扫后，必须主动询问是否删除（流程见 Step 5）。只删自己命名的 `scan_*.csv` / `scan_*.csv.wiz`，`%TEMP%` 下其他文件一律不碰。
-- **网页删除按三灯限权。** 绿灯可“移到回收站”或“直接删除”；黄灯只允许 `trash_paths` 内的“移到回收站”（含用户数据，默认不给永久删除）；红灯只允许“打开目录”。**永久删除默认开启**：`python scripts/server.py <json>` 启动后网页就有“直接删除”按钮；想要可逆模式加 `--no-allow-rm`。即使开启，也仍拒绝家目录根、盘符根、AppData、Desktop/Documents/Downloads、Program Files 根、System32 等敏感路径，这条不可关。
+- **网页删除按三灯限权。** 绿灯可“移到回收站”或“直接删除”；黄灯只允许 `trash_paths` 内的“移到回收站”（含用户数据，默认不给永久删除）；红灯只允许“打开目录”。**永久删除默认开启**：`python scripts/server.py <json>` 启动后网页就有“直接删除”按钮；想要可逆模式加 `--no-allow-rm`。白名单内、且不越出允许根目录的路径一律可删——**不再有敏感目录黑名单**，家目录根、AppData、System32、Program Files\WindowsApps 都能删。唯一的护栏是「报告里列过」+「在允许根目录内」+ 审计留痕。
 - **回收站可以清空。** 需要立刻释放空间时，允许直接清空回收站或删除其中的项目（Windows `Clear-RecycleBin -Force`）。清空前告知用户会失去可逆性。
 - **浏览器 / 应用缓存只删纯缓存。** 登录态文件（`Cookies`、`Login Data`、`Web Data`、`Bookmarks`、`Extensions`、`Preferences`、`History`）一条都不能丢；逐子目录判定见 [safe-cache-paths-windows.md](references/safe-cache-paths-windows.md)。
 - **估算标注清楚。** 涉及“可释放空间”一律说明是估算值。
@@ -133,7 +133,7 @@ python scripts\server.py %TEMP%\storage_analysis.json     # Windows
 python3 scripts/server.py /tmp/storage_analysis.json       # macOS
 ```
 
-`server.py` 起在 127.0.0.1 + 随机端口 + 随机 token，自动打开浏览器。安全模型：`rm` 默认开启，可用 `--no-allow-rm` 关闭；`trash` 允许绿灯 + 黄灯 `trash_paths`；`open` 允许三灯的路径；所有请求做 token（`compare_digest`）+ Host 校验 + 按报告原始路径匹配的 allowlist + 越界检查 + 敏感目录 denylist；报告列出的链接只授权链接本身，不授权它指向的目标，链接自身位置须在允许根内；junction/符号链接只删链接本身，不递归目标；回收站操作校验返回码、`fAnyOperationsAborted` 和源路径是否真的消失；每次操作逐项返回结果并追加写入 `state/audit.jsonl`。
+`server.py` 起在 127.0.0.1 + 随机端口 + 随机 token，自动打开浏览器。安全模型：`rm` 默认开启，可用 `--no-allow-rm` 关闭；`trash` 允许绿灯 + 黄灯 `trash_paths`；`open` 允许三灯的路径；所有请求做 token（`compare_digest`）+ Host 校验 + 按报告原始路径匹配的 allowlist + 越界检查；报告列出的链接只授权链接本身，不授权它指向的目标，链接自身位置须在允许根内；junction/符号链接只删链接本身，不递归目标；回收站操作校验返回码、`fAnyOperationsAborted` 和源路径是否真的消失；每次操作逐项返回结果并追加写入 `state/audit.jsonl`。
 
 启动流程、静态报告、排版字段（`summary.overview`、`tier_stats`、进度条分段）、无按钮排障见 [reporting-guide.md](references/reporting-guide.md)。
 
@@ -169,7 +169,7 @@ python3 scripts/server.py /tmp/storage_analysis.json       # macOS
 | Everything 失败 | `fallback_reasons` 有记录，自动降级 WizTree / walk | 向用户说明原因，不得静默忽略 |
 | 某盘全部数据源失败 | `drives_detail[].status=failed`，`partial=true` | 报告里标注该盘未扫描，不得当作 0 字节 |
 | `rules.py` / `orphan.py` 缺 CSV | stderr 提示“CSV 不存在，跳过” | 检查路径；orphan 多盘必须全传 |
-| `server.py` 403 | token / Host / 白名单 / 越界 / 敏感目录 / 已用 `--no-allow-rm` 关掉永久删除 | 不要绕过；按提示确认后重启服务 |
+| `server.py` 403 | token / Host / 白名单 / 越界 / 已用 `--no-allow-rm` 关掉永久删除 | 不要绕过；按提示确认后重启服务 |
 | `server.py` 400 | 未知 mode、paths 非法 | 修正 analysis JSON 后重启 |
 | 回收站失败 | 200 + `ok=false` + 逐项 `error` | 文件保持原样，如实报告；绝不降级为 rm |
 

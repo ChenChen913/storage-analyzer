@@ -315,8 +315,9 @@ class ServerSecurityTests(unittest.TestCase):
         rp = os.path.realpath(other)
         self.assertEqual(server.validate_target(rp, {rp}, "trash", roots=[root]), "路径越界")
 
-    def test_sensitive_home_rejected(self):
-        self.assertIn("敏感", server.validate_target(
+    def test_home_root_allowed_when_listed(self):
+        # 0.3.1 起取消敏感目录 denylist：白名单内且不越界的路径一律放行
+        self.assertIsNone(server.validate_target(
             server.HOME, {server.HOME}, "trash", roots=[server.HOME]))
 
     def test_not_in_allowlist_rejected(self):

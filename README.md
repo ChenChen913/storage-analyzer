@@ -95,7 +95,7 @@ Step 5   收尾           处理扫描中间产物，询问用户删除时机
 - **定性先看内容，禁止凭目录名猜。** `recordings`、`photos`、`docs` 默认视为用户数据，进黄灯。
 - **成套清理由规则引擎兜底。** 浏览器缓存六件套（Cache、Code Cache、GPUCache、Service Worker、Shared Dictionary、DawnCache）漏一个，下一轮就会变成「新发现」。
 - **跨轮记忆。** 每个 ≥20MB 目录的定性写回 `state/registry.json`，下一轮从差分清单开始，而不是每次从零重看。
-- **绿灯可移回收站、也可直接删除；黄灯只能移回收站；红灯只能打开目录。永久删除默认开启。** 给服务加 `--no-allow-rm` 可退回只移回收站；敏感目录（家目录根、盘符根、AppData、System32 等）一律拒绝，这条不可关。
+- **绿灯可移回收站、也可直接删除；黄灯只能移回收站；红灯只能打开目录。永久删除默认开启。** 给服务加 `--no-allow-rm` 可退回只移回收站。白名单内、且不越出允许根目录的路径一律可删，**没有敏感目录黑名单**。
 
 ## 早期版本的真实问题：为什么每轮都有新发现
 
@@ -237,7 +237,7 @@ python3 scripts/server.py /tmp/storage_analysis.json
 - 服务只绑定 `127.0.0.1`，token 用 `secrets.compare_digest` 比较，Host 头校验防 DNS rebinding。
 - 请求路径必须同时通过 allowlist、越界检查和允许根目录校验。默认根是 `%USERPROFILE%` 与 `Program Files`；其他盘需启动时加 `--allow-root "D:\"`，盘符根带尾分隔符也能正常放行子目录。
 - allowlist 按报告里的原始路径匹配，不按解析后的目标匹配：报告列了一个链接，只允许删这个链接本身，不允许删它指向的目录。
-- 即使路径来自白名单，家目录根、盘符根、`AppData` 各层、Desktop/Documents/Downloads、Program Files 根、`System32`/`WinSxS` 等敏感目录仍会被拒绝。
+- **没有敏感目录黑名单。** 家目录根、`AppData` 各层、Desktop/Documents/Downloads、Program Files 根、`System32`/`WinSxS`、`WindowsApps` 等，只要在报告白名单内且不越出允许根目录，就会被真的删掉。删之前请自己确认路径。
 - junction / 符号链接只删除链接本身，不递归进目标目录；链接自身位置必须在允许根内，目标则不受此限制。
 - 每次操作按路径逐项执行，单项失败不中断整批；结果逐项返回，前端按路径标记成功或失败。
 - 所有 `trash` / `rm` / `open` 记录追加写入 `state/audit.jsonl`，该目录已 gitignore。
@@ -253,7 +253,7 @@ python -m unittest discover -s tests -v
 
 | 验证项 | 状态 |
 |--------|------|
-| 路径护栏、敏感目录拒绝、junction 处理 | 自动化测试覆盖，含盘符根尾分隔符、链接不得放行目标、根外链接拒绝、8.3 短名与长名等价 |
+| 路径护栏、junction 处理 | 自动化测试覆盖，含盘符根尾分隔符、链接不得放行目标、根外链接拒绝、8.3 短名与长名等价、白名单内的家目录根确实放行 |
 | 永久删除开关、逐项结果、审计日志 | 自动化测试覆盖 |
 | 回收站删除与结果校验 | 本机真实删除验证：普通文件、中文与空格文件名、空目录、非空目录、只读文件，单次批量请求 |
 | `</script>` 注入转义、前端单引号转义 | 自动化测试覆盖 |
