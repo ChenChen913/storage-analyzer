@@ -1,371 +1,206 @@
-# Storage Analyzer
+<h1 align="center">storage-analyzer</h1>
 
-> **来源**：本仓库改造自 [KKKKhazix/khazix-skills](https://github.com/KKKKhazix/khazix-skills) 中的 `storage-analyzer`。上游是一个包含 6 个 skill 的合集，本仓库只改造并发布了其中一个，其余 skill 的版权归原作者所有。
->
-> **完整 fork**：[ChenChen913/khazix-skills](https://github.com/ChenChen913/khazix-skills)，保留上游全部内容，用于记录血缘关系。
->
-> 原项目采用 MIT 许可，原版权归 数字生命卡兹克；本仓库的改造部分归 ChenChen913。
+<p align="center">
+  <b>简体中文</b> | <a href="./README_EN.md">English</a>
+  <br><br>
+  <a href="https://github.com/ChenChen913/storage-analyzer/actions/workflows/tests.yml"><img src="https://github.com/ChenChen913/storage-analyzer/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+</p>
 
-一个由 AI Agent 驱动、扫描阶段只读的存储分析 skill。它做四件事：把整块盘的文件清单摊开，按 🟢 可自动清理 / 🟡 需人工判断 / 🔴 谨慎清理分三级，生成可折叠、命令可复制、支持逐项确认删除的本地网页报告，并把这一轮的定性结论存下来供下一轮复用。
+给 AI Agent 用的全盘存储分析 Skill：扫描 → 三灯分级 → 网页一键删除（含永久删除）。
 
-它不是双击即用的软件，需要挂在支持 skill 的 Agent 里使用，由 Agent 负责逐目录看内容、判断用途、写分级理由。
+当前版本 0.3.1 ｜ 43 项测试 ｜ 零第三方依赖
 
-## 和清理软件相比，差别在哪
+## 目录
 
-先说结论：**传统清理软件清得不彻底，这个判断在实测范围内成立，但原因不是它们能力差，而是它们的工作方式决定了它们默认只清「自己认识的位置」。**
+- [为什么做这个项目](#为什么做这个项目)
+- [快速开始](#快速开始)
+- [用法](#用法)
+- [配置](#配置)
+- [项目结构](#项目结构)
+- [开发](#开发)
+- [常见问题](#常见问题)
+- [已知限制](#已知限制)
+- [如何贡献](#如何贡献)
+- [许可证](#许可证)
 
-### 清理软件是规则驱动
+## 为什么做这个项目
 
-Windows 自带的磁盘清理，类别来自注册表 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches`。Windows 11 上实测共 31 项，全部是固定的系统级类别：
+已经有很多工具能回答「哪个目录最大」。这个 Skill 想回答的是下一个问题：**这些占地方的东西，哪些能删、怎么删、删了会怎样。**
+
+它是给 Agent 用的，不是又一个 GUI 分析器。整个流程写在 `SKILL.md` 里，Agent 读完之后自己决定怎么扫、怎么分级、怎么处置；11 个 Python 脚本是它调用的工具，不需要你手动敲。
+
+作者做这件事的直接动机：想要一个能被 Agent 直接调用、跨轮记住结论的清理工具。
+
+**与同类方案的主要差异是跨轮记忆。** 第 1 轮把每个 ≥20MB 目录的定性写进 `state/registry.json`，第 2 轮从 `registry.py diff` 的增量清单开始，而不是每次从零重看一遍。没有这一层，同一条路径会在每一轮被当成「新发现」重复分析。
+
+## 快速开始
+
+前置要求：
+
+- Python 3，仅用标准库，无需 `pip install`
+- Windows 为主（macOS 分支保留上游实现，本仓库未复验；Linux 不支持）
+- 可选：Everything 的 `es.exe` 或 WizTree 的 `WizTree64.exe`，装了扫描会快很多
+
+仓库不含安装脚本。把整个目录放进宿主 Agent 的 skills 路径即可，本机实测位置是 `~/.agents/skills/storage-analyzer`。
+
+三步跑完一次分析：
+
+```sh
+# 1. 全盘扫描，产出 JSON 与每盘一份 CSV
+python scripts/scan.py --out "%TEMP%\storage_scan.json"
+
+# 2. 增量审计（多盘要把 CSV 全传）
+python scripts/rules.py  --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv" --out "%TEMP%\rules_hits.json"
+python scripts/orphan.py --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv" --min-mb 50 --out "%TEMP%\orphans.json"
+python scripts/apps.py   build --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
+python scripts/registry.py diff --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
+
+# 3. 写 analysis JSON 后起报告服务
+python scripts/server.py "%TEMP%\storage_analysis.json"
+```
+
+第 3 步的 `storage_analysis.json` 要自己写，结构见 `scripts/build_report.py` 顶部注释。
+
+## 用法
+
+```mermaid
+flowchart LR
+    A[scan.py<br/>全盘扫描] --> B[scan_C.csv / scan_D.csv<br/>路径,大小]
+    B --> C[rules / orphan<br/>apps / registry]
+    C --> D[analysis JSON]
+    D --> E[server.py<br/>本地报告服务]
+    E --> F[浏览器逐项清理]
+```
+
+**数据源自动降级**：Everything → WizTree → `os.scandir` 全盘遍历。三者导出的都是同一份「路径,大小」CSV，后续聚合完全一致。`--source` 可以强制指定其中一个。
+
+**扫描可信度**写在输出的 `coverage` 字段里：`complete` / `partial` / `limited` / `suspect`。`suspect=true` 表示文件数为 0 但磁盘已用，这种结果不能用来做清理决策。
+
+**三灯分级**：
+
+| 灯 | 含义 | 网页上能做什么 |
+|---|---|---|
+| 🟢 可自动清理 | 纯缓存、临时文件、安装包残留，可再生 | 移到回收站 / 直接删除 |
+| 🟡 需人工判断 | 含用户数据或有判断成本 | 移到回收站 / 打开目录 |
+| 🔴 谨慎清理 | 想动但不建议手删，应走正规卸载 | 打开目录 |
+
+报告服务启动后的实际输出（数字随扫描结果变化）：
 
 ```text
-Active Setup Temp Folders   Content Indexer Cleaner     D3D Shader Cache
-Delivery Optimization Files Device Driver Packages      Downloaded Program Files
-Internet Cache Files        Language Pack               Offline Pages Files
-Old ChkDsk Files            Previous Installations      Recycle Bin
-Setup Log Files             System error memory dumps   Temporary Files
-Thumbnail Cache             Update Cleanup              Upgrade Discarded Files
-User file versions          Windows Defender            Windows Error Reporting
-Windows ESD installation    Windows Upgrade Log Files   ...
+$ python scripts/server.py "%TEMP%\storage_analysis.json"
+报告服务已启动：http://127.0.0.1:30228/
+绿灯可删 40 项 | 黄灯可移回收站/打开文件夹 15 项 | 页面上点
+永久删除：已启用（默认）。不可恢复，请逐项确认；只想要可逆模式就加 --no-allow-rm。
+允许的根目录：<user profile> | C:\Program Files | C:\Program Files (x86)
 ```
 
-存储感知（Storage Sense）会自动清临时文件和回收站，默认不碰下载文件夹。CCleaner 一类第三方工具围绕临时文件、浏览器缓存与 Cookie、注册表等公认位置展开。它们都是「已知清单 + 定期更新」，清单外的目录默认不会碰。第三方工具通常允许手动添加自定义路径，但那要求用户自己先知道路径在哪，等于已经解决了「发现」这一步。
+服务绑定 `127.0.0.1`，端口随机，每次启动生成随机 token。关掉服务，网页上的按钮立即失效。
 
-### 这个 skill 是清单驱动
+## 配置
 
-`scan.py` 先用 Everything 或 WizTree 拿到全盘每一个文件的路径与大小，再用 `rules.py`、`orphan.py`、`apps.py`、`registry.py` 做成组命中、卸载残留检测、应用登记与跨轮差分，最后交给 Agent 逐个目录看内容定性。
+环境变量：
 
-换句话说：清理软件问的是「这个位置在我的清单里吗」，这个 skill 问的是「这块盘上到底有什么」。
+| 名称 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `STORAGE_ANALYZER_STATE` | 否 | `<repo>/state` | 覆盖状态目录（`registry.json`、`audit.jsonl` 存放处） |
+| `STORAGE_ANALYZER_WIZTREE` | 否 | 自动探测 | 指定 WizTree 可执行文件路径，便携版用 |
+| `TEMP` / `TMP` | 否 | 系统临时目录 | 扫描中间 CSV 的落盘位置 |
 
-### 验证：清理清单之外确实有大量内容
+`scan.py` 主要参数：
 
-对用户目录与两个 AppData 根做一次枚举，名字以 `.` 开头、以 `updater` 结尾或以 `@` 开头的目录可以列出一大批。Windows 磁盘清理的固定类别里，没有任何一项能对应它们。这些目录主要是开发工具的数据目录和应用更新器残留。
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--drives` | 全部固定盘 | 逗号分隔，如 `C,D` |
+| `--source` | `auto` | `auto` / `everything` / `wiztree` / `walk` |
+| `--wiztree-admin` | 关 | 走提权路径导出，覆盖受保护目录 |
+| `--reuse-csv` | 关 | 复用已有 CSV，跳过导出阶段 |
+| `--min-dir` | `10` | 目录聚合的最小 MB 阈值 |
+| `--top` | `80` | 各组输出条目数上限 |
+| `--out` | 空 | 写 JSON 到文件；不填则输出到 stdout |
 
-需要说清楚的是：它们**不是都能删**，其中大量是正在使用的开发环境。这个 skill 的价值不是「发现即删除」，而是让这些目录从「不可见」变成「可判断」，再由 Agent 给出保留、迁移或清理的具体方案。
+`server.py` 主要参数：
 
-### 这类分析能挖出的隐藏项
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--allow-rm` | 开 | 兼容旧命令用，行为等同默认 |
+| `--no-allow-rm` | — | 关闭永久删除，只提供移到回收站 |
+| `--allow-root PATH` | 仅 `%USERPROFILE%` 与两个 `Program Files` | 额外放行的根目录，可重复 |
+| `--port` | `0` | 监听端口，0 表示随机 |
+| `--no-browser` | 关 | 启动后不自动打开浏览器 |
 
-下面几类是传统清理器覆盖不到、而本 skill 的流程能稳定发现的：
+`--out` 建议始终使用。PowerShell 的 `>` 会写出带 BOM 的 UTF-8，后续 `json.load` 会直接报错。
 
-- **应用卸载后的数据残留**：用户目录、其他盘根目录、IDE 扩展目录可能各留一份，且没有注册表安装记录。
-- **开发工具的点目录群**：家目录下以点开头的工具数据目录，系统清理器完全不扫描。
-- **应用更新器缓存**：各类 `*-updater` 目录里的更新包与 pending 文件。
-- **驱动与安装器缓存**：显卡驱动下载缓存、浏览器更新器的 crx 缓存等独立位置。
-- **受保护目录**：`WindowsApps` 等，普通权限的数据源读不到，也就无从判断占用。
-
-全盘清单本身是可信的：抽样核对时，CSV 行数与索引数量的差异在 0.1% 以内。扫描覆盖率不是瓶颈，瓶颈一直是「看不看得到清单之外的东西」。
-
-### 需要说清楚的边界
-
-- 清理软件不是没用。回收站、缩略图、系统更新残留这类系统级项目，它比手工判断更稳妥，而且不依赖模型。
-- 这个 skill 会替你删东西，但只在你说清楚删什么之后。扫描阶段只读；清理有三个等价入口——报告网页按钮、`server.py` 的 `/action` 接口、Agent 直接跑命令。默认是**永久删除**（不进回收站）；想保住可逆性就用 `--no-allow-rm` 启动服务，或改走回收站入口。它不会「一键全自动清盘」，也不会在没被指认的路径上下手。
-- 「看见」不等于「该删」。应用本体、聊天记录、代码仓库这类东西，正确做法是卸载或迁移，不是删目录。
-- 分析质量取决于 Agent 的判断力。同一个盘换一个模型，分级结论可能有出入，所以每一项都要求写出理由，方便人复核。
-- 对受保护目录（`System Volume Information`、`WinSxS`、Defender 定义库）能看见不等于能删，这部分只做展示和解释。
-
-## 运行环境与改造说明
-
-| 平台 | 状态 |
-|------|------|
-| Windows 10 / 11 | 本仓库维护者实测使用，所有改造都在这里完成并验证 |
-| macOS | 上游作者在 macOS 上开发和使用，本仓库**从未复验** |
-| Linux | 不支持，`scan.py` 直接返回 `unsupported_platform` |
-
-具体说明：
-
-- **上游原版按 macOS 设计**，本仓库在 Windows 上做了一整套适配：Everything / WizTree 数据源、非系统盘分析、Windows 缓存安全边界、回收站与删除流程的 Windows 实现、git-bash 与 PowerShell 的路径差异、NTFS 权限与 junction。
-- **macOS 分支从未在本仓库复验**。它的实现保留着：用 `du` 统计固定目标目录，生成报告，支持一键移入废纸篓。但 macOS 不生成全盘 CSV，因此 `rules.py`、`orphan.py`、`apps.py`、`registry.py` 这套增量审计在 macOS 上不可用，功能完整度明显低于 Windows。
-- **Linux 没有任何实现**，脚本里的平台判断只覆盖 Windows 与 macOS，其他平台会显式报错退出。
-- Windows 需要先装 Python 3（`python` 或 `py -3`），全部脚本只用标准库，不需要 `pip install`。macOS 自带 `python3`。
-
-## 工作原理
+## 项目结构
 
 ```text
-Step 1   全盘清单      Everything / WizTree / walk 三选一，导出「路径,大小」CSV
-Step 1.5 增量审计      rules 成组命中 · orphan 卸载残留 · apps 应用登记 · registry 跨轮差分
-Step 2   语义分级      Agent 建目录树、对平总账、逐目录看内容，分 🟢 🟡 🔴
-Step 3   交互报告      server.py 起本地服务，token + 路径白名单 + 逐项确认
-Step 4   对话摘要       结论先行：总可释放估算、最该先清的项、风险最高的一项
-Step 5   收尾           处理扫描中间产物，询问用户删除时机
+storage-analyzer/
+├── SKILL.md              # Skill 入口：流程、规则、渐进式披露索引
+├── scripts/
+│   ├── scan.py           # 全盘扫描，数据源降级，产出 JSON + CSV
+│   ├── rules.py          # 规则引擎：成组命中清理候选
+│   ├── orphan.py         # 卸载残留：数据目录在、应用本体不在
+│   ├── apps.py           # 应用登记表与「未审查清单」
+│   ├── registry.py       # 跨轮档案：baseline / diff / mark / stats
+│   ├── drilldown.py      # 单目录下钻
+│   ├── build_report.py   # 把 analysis JSON 注入模板，生成静态报告
+│   ├── server.py         # 本地报告服务 + 删除 API
+│   ├── history.py        # 报告里的「新发现 / 删后复发」标注
+│   ├── statefile.py      # 状态文件原子写与跨进程锁
+│   └── report_util.py    # 模板注入前的转义
+├── references/           # 16 篇按场景拆分的参考文档
+├── assets/
+│   └── report_template.html
+├── tests/
+│   └── test_storage_analyzer.py
+└── state/                # 运行时状态，已在 .gitignore 中忽略
 ```
 
-几条关键设计：
+## 开发
 
-- **总账必须对平。** 文件合计、`disk_usage` 实占、目录树加总三方对不上，就说明有漏项，必须解释差额来源。
-- **定性先看内容，禁止凭目录名猜。** `recordings`、`photos`、`docs` 默认视为用户数据，进黄灯。
-- **成套清理由规则引擎兜底。** 浏览器缓存六件套（Cache、Code Cache、GPUCache、Service Worker、Shared Dictionary、DawnCache）漏一个，下一轮就会变成「新发现」。
-- **跨轮记忆。** 每个 ≥20MB 目录的定性写回 `state/registry.json`，下一轮从差分清单开始，而不是每次从零重看。
-- **绿灯可移回收站、也可直接删除；黄灯只能移回收站；红灯只能打开目录。永久删除默认开启。** 给服务加 `--no-allow-rm` 可退回只移回收站。白名单内、且不越出允许根目录的路径一律可删，**没有敏感目录黑名单**。
+```sh
+# 语法检查（CI 里跑的那条）
+python -m py_compile scripts/*.py
 
-## 早期版本的真实问题：为什么每轮都有新发现
-
-这是这个 skill 最早被反复指出的问题，也是 v3 改造的主因。当时连续六轮分析同一台机器，每一轮都还能再挖出一批，体量从几百 MB 到数 GB 不等，类型也越来越零碎。
-
-### 根因
-
-扫描覆盖从来不是问题，每轮的全盘 CSV 都是完整的，问题出在分析端：
-
-1. **Top-N 驱动，不是全量驱动。** 分析看的是按大小排序的清单和 ≥10MB 阈值，GB 级项目永远先被看到，MB 级缓存群系统性排在后面。下一轮调低阈值，又是一批「新发现」。
-2. **没有跨轮记忆。** 每一轮都从头看，上一轮的定性结论随对话压缩消失。一些陌生的点目录每轮都在 CSV 里，却始终没被查看。
-3. **成套清理靠临场枚举。** 当时只按识别出的几个文件名挑了少数压缩包，同目录下同类文件整批漏网。教训里写了「清理成套」，但执行时没有规则兜底。
-4. **没有卸载残留检测。** 某个应用的数据目录还在、本体早已卸载、长期没有活动，本该第一轮就发现，实际拖到第六轮。
-
-### v3 的解法
-
-| 问题 | 现在的机制 |
-|------|-----------|
-| 跨轮失忆 | `registry.py` 维护目录档案（大小、两层 mtime、定性结论、处置状态），每轮只 `diff` 新增、变大、删后复活三类 |
-| Top-N 盲区 | 分析顺序改为「未审查应用 > diff 增量 > 卸载残留 > 规则命中 > 全量 TopN 兜底」 |
-| 成套漏删 | 清理候选先跑 `rules.py` 拿成组结果，agent 只做复核；浏览器缓存六件套等由规则固定 |
-| 卸载残留 | `orphan.py` 用「数据目录存在 + 本体不在 + 活跃度低」给出置信度 |
-| 应用没审过 | `apps.py` 从注册表 `InstallLocation` 枚举应用，输出未审查清单，覆盖率明显高于只扫固定安装目录 |
-| 真残留与活水缓存难分 | 报告读 `state/last_diff.json`，自动标「新发现 / 删后复发 / 最后活动时间」 |
-
-### 现在的状态与边界
-
-- 结构性问题已经消掉：同类文件下一轮不会再被当成新发现，因为规则和档案会先接住。
-- 活水缓存仍会再生，但会被标成「删后复发」，不会伪装成新发现。
-- 受保护目录与系统还原点造成的账目差额，普通权限下仍解释不全，见 [deep-scan.md](references/deep-scan.md) 的差额对账。
-- 档案越全，增量审查越准；第一次使用仍是全量分析，不会一上来就很快。
-
-## 数据源：Everything 与 WizTree
-
-两个工具都能在几十秒内给出百万级文件的完整清单，但底层原理不同，覆盖范围和代价也不同。
-
-### Everything
-
-**原理**：Everything 直接读取 NTFS 的 **MFT（Master File Table，主文件表）** 来建立文件名索引。MFT 是 NTFS 记录每个文件元信息（文件名、大小、时间戳、父目录指针）的系统表，读它比逐个目录调用 Windows 文件系统 API 快几个数量级。后续的文件增删改用 **USN Journal（更新序列号日志）** 增量跟踪，不需要重复全盘遍历。
-
-`es.exe` 本身不扫描磁盘，它只是一个 IPC 客户端，向常驻的 Everything 主程序要结果。所以主程序没启动时会报 `Error 8: IPC window not found`。
-
-**好处**：
-
-- 普通权限就能覆盖 `WindowsApps`、Defender 定义库等受保护目录。Everything 的索引服务以系统权限读取 MFT，不依赖用户对目录的 ACL 权限。
-- 索引常驻内存，建好之后重复分析近乎零成本，导出通常在十秒以内。
-- 安装包只有几 MB，命令行输出格式稳定，免费且商用无授权顾虑。
-
-**代价**：
-
-- 需要主程序常驻，索引数百万文件时约几百 MB 内存，内存紧张的机器要权衡。
-- 主程序没运行时不可用。
-- 首次安装需要花时间建索引。
-- 索引本身是否完整覆盖全盘，本工具无法独立验证。扫描只能把导出行数与 Everything 自己的 `-get-result-count` 比对；若索引被排除规则裁剪或索引过期，行数校验通过也可能偏少。报告页会在 `coverage.caveats` 里明确写出这一点。
-
-### WizTree
-
-**原理**：WizTree 同样**绕过 Windows 文件系统 API，直接解析 NTFS 的 MFT**，因此扫描速度远超普通遍历工具。区别在于它不维护常驻索引，每次扫描都重新读盘。
-
-**好处**：
-
-- 没有后台进程，空闲时零内存占用。
-- 自带图形界面，手动查看大目录很直观。
-- 安装即用，不依赖后台索引是否在运行。
-- 安装包约 20 MB，仍算轻量。
-
-**代价**：
-
-- 普通权限下拿不到受保护目录的读取权限，会漏掉 `WindowsApps`、Defender 定义库和部分容器 GUID 目录，缺口幅度取决于机器，最多可达整盘的一成左右。
-- 每次都要重扫，热缓存几十秒，冷缓存可达数分钟。
-- 完整覆盖需要在已提权的终端里加 `--wiztree-admin`（`/admin=1`）。注意：该模式本仓库尚未实测。
-- 个人免费，商用需授权。
-
-### 数据源特性对比
-
-| 指标 | Everything | WizTree（普通权限） |
-|------|-----------|--------------------|
-| 导出速度 | 秒级 | 数十秒到数分钟 |
-| 重复扫描 | 读常驻索引，近乎零成本 | 每次重扫 |
-| 覆盖 | 普通权限即可全盘 | 有受保护目录缺口，需管理员 |
-| 常驻内存 | 几百 MB | 无 |
-| 安装体积 | 几 MB | 约 20 MB |
-| 授权 | 免费 | 个人免费，商用需授权 |
-
-详细测试方法见 [data-source-comparison.md](references/data-source-comparison.md)。
-
-### 选择规则
-
-1. **已经装了哪个，就用哪个。** `--source auto` 自动按 Everything → WizTree → walk 选择，不需要用户做决定。
-2. **两个都没装，推荐先装 Everything。** 普通权限就能全盘覆盖、重复扫描秒级、安装包只有几 MB，最适合需要反复分析全盘的场景。
-3. **内存紧张、只想偶尔看一次，选 WizTree。** 但请在提权终端里加 `--wiztree-admin`，否则会漏掉受保护目录。
-4. **两个都不装，回退 `walk`。** 能出结果，但百万文件级要几十分钟，只适合应急。
-
-## 安装
-
-把整个目录放到 Agent 的 skills 目录：
-
-- Trae CN：`%USERPROFILE%\.trae-cn\skills\storage-analyzer`
-- Claude Code：`~/.claude/skills/storage-analyzer`
-
-Windows 另需安装 Python 3，并勾选「Add Python to PATH」。
-
-## 使用
-
-在对话里说「帮我看看 C 盘为什么满了」之类的话，Agent 会自动命中这个 skill。也可以手动跑脚本：
-
-```powershell
-# Windows
-python scripts\scan.py --out "%TEMP%\storage_scan.json"
-python scripts\rules.py --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv" --out "%TEMP%\rules_hits.json"
-python scripts\orphan.py --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv" --min-mb 50 --out "%TEMP%\orphans.json"
-python scripts\apps.py build --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
-python scripts\registry.py diff --csv "%TEMP%\scan_C.csv" "%TEMP%\scan_D.csv"
-python scripts\server.py "%TEMP%\storage_analysis.json"
-```
-
-> PowerShell 的 `>` 会写出带 BOM 的 UTF-8，随后的 `json.load` 会报 `Unexpected UTF-8 BOM`。`scan.py`、`rules.py`、`orphan.py` 都支持 `--out` 直接写无 BOM 的 UTF-8 文件，优先用它而不是 `>`。
-
-```bash
-# macOS（功能子集，无 CSV 与增量审计）
-python3 scripts/scan.py > /tmp/storage_scan.json
-python3 scripts/server.py /tmp/storage_analysis.json
-```
-
-`server.py` 会在 `127.0.0.1` 随机端口起动，带随机 token，并自动打开浏览器。报告里的删除按钮只对绿灯可见（默认同时有「移到回收站」和「直接删除」两个），黄灯只能移到回收站，红灯只能打开目录，每次点击都要二次确认。
-
-## 安全模型
-
-网页上的清理按钮是主要入口（Agent 也可以直接跑命令），权限按三灯收紧：
-
-| 动作 | 允许范围 | 限制 |
-|------|----------|------|
-| `trash` 移到回收站 | 绿灯 + 黄灯的 `trash_paths` | 默认可用；执行后校验返回码、`fAnyOperationsAborted`、源路径是否真的消失 |
-| `rm` 直接删除 | 绿灯 `trash_paths` | **默认开启**；`--no-allow-rm` 可关闭 |
-| `open` 打开目录 | 三灯的 `path` / `trash_paths` | 不写盘，仅调用系统文件管理器 |
-
-路径护栏：
-
-- 服务只绑定 `127.0.0.1`，token 用 `secrets.compare_digest` 比较，Host 头校验防 DNS rebinding。
-- 请求路径必须同时通过 allowlist、越界检查和允许根目录校验。默认根是 `%USERPROFILE%` 与 `Program Files`；其他盘需启动时加 `--allow-root "D:\"`，盘符根带尾分隔符也能正常放行子目录。
-- allowlist 按报告里的原始路径匹配，不按解析后的目标匹配：报告列了一个链接，只允许删这个链接本身，不允许删它指向的目录。
-- **没有敏感目录黑名单。** 家目录根、`AppData` 各层、Desktop/Documents/Downloads、Program Files 根、`System32`/`WinSxS`、`WindowsApps` 等，只要在报告白名单内且不越出允许根目录，就会被真的删掉。删之前请自己确认路径。
-- junction / 符号链接只删除链接本身，不递归进目标目录；链接自身位置必须在允许根内，目标则不受此限制。
-- 每次操作按路径逐项执行，单项失败不中断整批；结果逐项返回，前端按路径标记成功或失败。
-- 所有 `trash` / `rm` / `open` 记录追加写入 `state/audit.jsonl`，该目录已 gitignore。
-
-校验与执行之间仍存在一个极短的 TOCTOU 窗口：路径在校验通过、真正删除之前被替换成 junction 或别的对象，服务端无法完全消除这种竞态。当前的处理是先 realpath、再判链接类型、最后操作，并在删除前复核对象类型；如果目录被替换成链接，最终删除的仍是链接本身而不是链接目标。要彻底消除，需要在 Windows 上用句柄级 API 打开后再删除，这不在本项目范围内。
-
-## 测试与验证状态
-
-```powershell
-# 全部自动化测试（纯标准库 unittest）
+# 单元测试：43 项，其中 2 项真实回收站用例默认跳过
 python -m unittest discover -s tests -v
 ```
 
-| 验证项 | 状态 |
-|--------|------|
-| 路径护栏、junction 处理 | 自动化测试覆盖，含盘符根尾分隔符、链接不得放行目标、根外链接拒绝、8.3 短名与长名等价、白名单内的家目录根确实放行 |
-| 永久删除开关、逐项结果、审计日志 | 自动化测试覆盖 |
-| 回收站删除与结果校验 | 本机真实删除验证：普通文件、中文与空格文件名、空目录、非空目录、只读文件，单次批量请求 |
-| `</script>` 注入转义、前端单引号转义 | 自动化测试覆盖 |
-| 状态文件原子写、损坏隔离、并发锁 | 自动化测试覆盖，含 3 进程并发读改写 |
-| `rules.py` 分组与版本排序、`orphan.py` 证据链 | 自动化测试覆盖 |
-| `scan.py` 临时沙箱扫描与 `coverage` 契约 | 自动化测试覆盖，含 WizTree 普通权限降级为 partial、0 文件时判 suspect |
-| 本地 HTTP 服务集成（token / Host / 越权） | 自动化测试覆盖，含缺 token、非法 mode、GET /action、`..` 穿越、非白名单、回收站失败不降级 |
-| 批量审计汇总 | 自动化测试覆盖（总数 / 成功数 / 失败数 / 风险等级） |
-| 回收站操作失败与取消 | 自动化测试用 mock 覆盖，验证逐项报错且不降级为永久删除 |
+CI 在 `.github/workflows/tests.yml`：Ubuntu + Windows 矩阵，Python 3.11，只跑上面两条命令。
 
-当前共 42 项测试，`python -m unittest discover -s tests -v` 全部通过。Windows 上默认跳过 2 项：真实回收站用例，以及仅 POSIX 可创建的悬空符号链接用例。
+真实回收站用例要设 `SA_REAL_RECYCLE=1` 才会执行，跑完会在你的回收站里留下测试项。
 
-真实回收站用例会往你的回收站里写入测试项，因此默认不执行。需要验证时显式开启：
+## 常见问题
 
-```powershell
-$env:SA_REAL_RECYCLE = "1"
-python -m unittest tests.test_storage_analyzer.ServerHttpTests.test_real_recycle_bin_mixed_batch -v
-```
+**扫出来的文件数是 0，但磁盘明明装满了？**
+`scan.py` 会比对「文件数为 0」与「磁盘已用」，矛盾时标 `coverage.suspect=true`、`partial=true`。常见原因是数据源工具没启动或权限不足，按 `fallback_reasons` 排查后重扫，不要基于这种结果做清理决策。
 
-非 Windows 平台会自动跳过回收站相关用例；CI 上也从不设置该变量。
+**没装 Everything 也没装 WizTree 会怎样？**
+自动回退到 `os.scandir` 全盘遍历。能用，但百万文件级别要几十分钟。装了任一索引工具，单盘通常十几秒。
 
-## 目录结构
+**报告页上某些项没有「移到回收站」按钮？**
+该项没有 `trash_paths`，或者路径不在允许根目录内。跨盘路径要启动时加 `--allow-root "D:\"`。
 
-```text
-SKILL.md                          主入口，只放流程骨架与硬性规则
-scripts/
-  scan.py                         全盘扫描，Everything / WizTree / walk 三数据源
-  rules.py                        成套规则命中（缓存六件套、视频缓存等）
-  orphan.py                       卸载残留检测
-  apps.py                         应用登记表与未审查清单
-  registry.py                     跨轮目录档案与差分
-  drilldown.py                    单目录多层下钻
-  build_report.py                 静态报告生成
-  server.py                       本地报告服务，带确认删除 API
-references/
-  scan-workflow.md                数据源选择、扫描降级、批量下钻
-  incremental-audit.md            增量审计四件套用法
-  analysis-guide.md               分级标准与清理后复扫
-  reporting-guide.md              报告 JSON schema 与排障
-  safe-cache-paths-windows.md     常见应用缓存边界
-  pitfalls-windows.md             Windows 权限、锁文件、跨盘搬迁
-  deep-scan.md                    直读深扫与差额对账
-  data-source-comparison.md       Everything vs WizTree 实测
-  everything-integration.md       两个工具的部署与 CLI 用法
-  windows.md / macos.md           系统存储布局
-  lessons-learned-windows.md      踩坑记录
-  win11-*.md                      三轮实战案例
-assets/report_template.html       报告模板
-state/                            本地运行档案，已 gitignore
-```
+**用 PowerShell 生成 JSON 后读取报 `Unexpected UTF-8 BOM`？**
+`>` 会写带 BOM 的 UTF-8。改用各脚本的 `--out` 参数，它们直接写无 BOM 的 UTF-8。
 
-## 已知限制与未验证项
+## 已知限制
 
-| 项目 | 状态 |
-|------|------|
-| macOS 全流程 | 上游实现保留，本仓库未复验 |
-| macOS 增量审计 | 无 CSV 通路，四件套不可用 |
-| Linux | 不支持 |
-| WizTree 管理员模式 | 预期补齐受保护目录，本仓库未实测 |
-| Windows 回收站删除 | 已实测普通文件、中文与空格文件名、空目录、非空目录、只读文件、批量操作与逐项结果校验；未实测用户取消、文件被占用、超长路径、网络盘 |
-| TOCTOU 竞态 | 校验与执行之间的极短窗口无法完全消除，见「安全模型」 |
-| 扫描与实占差额 | 系统还原点、NTFS 元数据、ACL 受限目录读不到，这部分差额删文件也回收不了 |
-| Everything 索引覆盖 | 只能校验导出行数与索引计数一致，索引自身是否完整无法独立验证；`coverage.caveats` 会写明 |
-| WizTree 普通权限覆盖 | 受保护目录可能漏计，此时 `coverage.partial=true`、`limited=true`，不再宣称完整覆盖 |
-| 扫描并发 | 同一台机器的两个 `scan.py` 通过 `state/scan.lock` 串行化，第二个在 1 秒内拿不到锁会退出码 2 |
-| 分析一致性 | 依赖 Agent 判断，同一盘不同轮次结论可能不同 |
-| 大目录耗时 | `walk` 模式百万文件级需数十分钟 |
+- **Linux 不支持**：`scan.py` 遇到 Linux 直接返回 `unsupported_platform`。
+- **macOS 未复验**：保留了上游实现与废纸篓删除逻辑，但本仓库没有实际验证过。
+- **非管理员权限有盲区**：WizTree 普通权限读不到 `WindowsApps` 等受保护目录，此时 `coverage.limited=true`；卷影副本 `System Volume Information` 始终读不到，总量会有差额。
+- **网页删除默认只覆盖 `%USERPROFILE%` 与 `Program Files`**：动其他盘要显式 `--allow-root`。
+- **0.3.1 起没有敏感目录黑名单**：家目录根、`AppData`、`System32` 只要在报告白名单内就会被真的删掉，且没有回收站兜底。这是有意为之的设计选择，不是缺陷。
+- **不提供「一键全自动清盘」**：每一步清理都需要明确的路径清单。
 
-## 常见问题（FAQ）
+## 如何贡献
 
-**报告页显示「覆盖受限 / 部分目录未读取」，还能信吗？**
-说明数据源没有完整覆盖。WizTree 普通权限导出拿不到 `WindowsApps`、Defender 定义库等受保护目录，此时扫描会主动把 `coverage.partial` 标为真，并在报告页写出覆盖提示。要完整统计，请在提权终端加 `--wiztree-admin` 重扫，或改用 Everything。
+问题与建议提到 [Issues](https://github.com/ChenChen913/storage-analyzer/issues)，欢迎 PR。
 
-**扫描结果文件数是 0，但磁盘明明装满了？**
-扫描会比对「文件数为 0」与「磁盘已用」，二者矛盾时标记 `coverage.suspect=true`、`partial=true`，报告会显示「结果可疑」。常见原因是数据源工具未启动、权限不足或导出文件被清空，请按 `fallback_reasons` 排查后重扫，不要基于这种结果做清理决策。
+如果是新增清理规则，请把规则加进 `scripts/rules.py` 的 `RULES`，并补一条测试——规则引擎是成套清理的兜底，手工按文件名挑文件会漏。
 
-**PowerShell 生成 JSON 后读取报 `Unexpected UTF-8 BOM`？**
-PowerShell 的 `>` 会写带 BOM 的 UTF-8。改用 `scan.py --out`、`rules.py --out`、`orphan.py --out` 直接写文件；已有文件可用 `encoding="utf-8-sig"` 读取。
+## 许可证
 
-**网页上为什么没有「移到回收站 / 直接删除」按钮？**
-对应项没有 `trash_paths`，或路径不在允许根目录内（默认只有 `%USERPROFILE%` 与 `Program Files`）。跨盘路径需要启动时加 `--allow-root "D:\"`。「直接删除」默认就有，除非服务是用 `--no-allow-rm` 启动的。
+[MIT](LICENSE) © 2026 数字生命卡兹克
 
-**回收站删除失败时，会不会静默降级成永久删除？**
-不会。`SHFileOperationW` 返回非零或 `fAnyOperationsAborted` 为真时直接抛错，服务端按路径返回失败原因，源文件保持原样。批量操作不会因为个别失败而继续误删其他路径。
-
-**同时跑两个 `scan.py` 会互相覆盖 CSV 吗？**
-不会。扫描入口持有 `state/scan.lock` 跨进程锁，第二个进程 1 秒内拿不到锁会直接退出并提示，避免两个任务同时写同一份 `scan_<盘符>.csv`。
-
-**`orphan.py` 只传 C 盘 CSV 会怎样？**
-其他盘的数据目录查不到大小，会被按 0 字节处理，可能整体漏报。多盘环境必须把所有盘的 CSV 都传给 `--csv`。
-
-**为什么真实回收站测试默认跳过？**
-它会在你的回收站里留下测试项。默认只跑 mock 用例；需要真实验证时设 `SA_REAL_RECYCLE=1`，跑完自行清空回收站。
-
-## 扫描临时文件
-
-`scan.py` 会在 `%TEMP%` 留下 `scan_<盘符>.csv`。单盘通常一两百 MB，多盘合计可达 1 GB 以上。
-
-这些 CSV 是增量审计与清理后复扫的必需输入，**扫描完不能立即当垃圾删**。按 SKILL.md Step 5 的规则处理：
-
-1. 报告交付、用户确认不再复扫后，Agent 主动询问是否删除。
-2. 用户还要做前后对比，就保留到复扫结束再提醒。
-3. 用户事先授权「不用问直接删」，才直接在默认节点删除。
-
-删除时只动 `%TEMP%\scan_<盘符>.csv` 与 `.wiz` 残留，`%TEMP%` 下其他文件一律不碰。
-
-## 隐私
-
-`state/` 是本地运行档案，包含个人目录路径与定性结论，已加入 `.gitignore`，不会上传。报告服务只绑定 `127.0.0.1`，带随机 token 与 `$HOME` 路径校验。
-
-`state/audit.jsonl` 同样在 `state/` 下，每行一条 JSON，记录时间、动作、逐路径结果与失败原因，因此会包含本地绝对路径。审计不记录 token。确认不再需要追溯时，直接删除 `state/audit.jsonl` 即可，不影响后续扫描；也可以整目录删除 `state/`，代价是丢失跨轮目录档案与差分历史。
-
-## 许可
-
-MIT，见 [LICENSE](LICENSE)。原项目版权归 数字生命卡兹克，本仓库的改造部分归 ChenChen913。
+本仓库改造自 [KKKKhazix/khazix-skills](https://github.com/KKKKhazix/khazix-skills) 的 `storage-analyzer`，仅发布并改造这一个 skill，归属与改造范围见 [NOTICE](NOTICE)。
